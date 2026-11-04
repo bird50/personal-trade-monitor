@@ -9,3 +9,4 @@ data/*.db*
 .runtime/
 mac/build/
 mac/.module-cache/
+data/history/

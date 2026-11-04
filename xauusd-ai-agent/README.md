@@ -207,6 +207,27 @@ Lists ของสัญญาณและบัญชีใช้ pagination �
 .venv/bin/python scripts/test_lm_studio.py --xm --provider codex
 ```
 
+### Backtest ย้อนหลังแบบออฟไลน์
+
+`backtest/` ทดสอบกลยุทธ์จากไฟล์ M1 ของโบรกเกอร์ (`data/history/xm_gold_m1.csv` จาก `mt5/XMExportHistory.mq5`) โดยไม่แตะ service, ฐานข้อมูล หรือบัญชี Paper ผลเขียนที่ `.runtime/backtest/<run>/summary.json` และ `trades.json`
+
+```sh
+.venv/bin/python scripts/run_backtest.py --strategy baseline_xm01
+.venv/bin/python scripts/run_backtest.py --strategy baseline_xm01 --params '{"structure_filter": false, "exits": {"breakeven_r": 1}}'
+.venv/bin/python scripts/run_backtest.py --write-synthetic /tmp/xm-synthetic.csv --synthetic-days 60
+.venv/bin/python scripts/run_backtest.py --strategy baseline_xm01 --data /tmp/xm-synthetic.csv
+```
+
+- สัญญาณคำนวณบนแท่ง M5 ที่ปิดแล้วเท่านั้น เข้าที่ราคาเปิดแท่งถัดไป (BUY ที่ Ask, SELL ที่ Bid โดย Ask = Bid + `spread_points` × point) และตรวจ SL/TP บนเส้นทาง M1 ถ้าแท่ง M1 เดียวแตะทั้งสองระดับ จะถือว่าโดน SL ก่อน
+- Slippage, commission, การคำนวณขนาด 0.5% ของ equity เริ่มต้น 10,000 USD, เพดาน notional และอายุสัญญาณ อ่านจาก `config/risk-xm-paper.json` และ `config/paper-xm.json` ใช้ position เดียวต่อครั้ง ยังไม่จำลอง daily loss lock, การตรวจของ AI และอายุ quote
+- เวลาทั้งหมดเป็นเวลา server ของโบรกเกอร์ ไม่แปลงด้วย offset ที่สมมติขึ้น ช่วง session (`asia`/`london`/`new_york`) อยู่ใน `backtest/metrics.py`
+- ค่าเริ่มต้น `--segment in_sample` ใช้เฉพาะ 8 เดือนแรก ใช้ `--segment out_of_sample` หรือ `all` (4 เดือนหลัง) เพื่อยืนยันผลขั้นสุดท้ายเท่านั้น ห้ามใช้ปรับพารามิเตอร์
+- `--live-risk-gate` จะตัดสัญญาณที่ Risk/Paper จริงจะปฏิเสธ (เช่น net RR < `min_net_reward_risk`) ถ้าไม่ใส่ ผลจะนับไว้ใน `trades_failing_live_risk`
+- กลยุทธ์ใหม่ให้เขียนเป็นไฟล์ละหนึ่งกลยุทธ์ใน `backtest/strategies/<name>.py` โดยสืบทอด `Strategy` ใน `backtest/strategies/base.py` แล้ว return `{side, sl, tp}` หรือ `None` จาก `on_bar(ctx)` ส่วน indicator แบบ causal อยู่ใน `backtest/indicators.py`
+- `baseline_xm01` คือ `xm-0.1` ที่ใช้ rule ชุดเดียวกับระบบจริง `tests/test_backtest.py` ตรวจว่า candidate ตรงกับ `XMEngine` บนแท่งเดียวกัน
+
+ผล backtest เป็นการจำลองจากข้อมูลย้อนหลัง ไม่ใช่หลักฐานว่าระบบจริงจะทำกำไรได้ ผลจากข้อมูลสังเคราะห์ใช้ตรวจว่าโค้ดทำงานถูกต้องเท่านั้น
+
 ผลตรวจที่บันทึกถึง **4 พฤศจิกายน 2026**:
 
 - ชุดทดสอบ Python: **231 passed**, 1 Starlette/httpx deprecation warning

@@ -1,0 +1,5 @@
+
+
+Z:\Users\siratiswarawat\bird_dev\golife_proj\xauusd-ai-agent\mt5\XMExportHistory.mq5 : information: compiling Z:\Users\siratiswarawat\bird_dev\golife_proj\xauusd-ai-agent\mt5\XMExportHistory.mq5
+ : information: code generated
+Result: 0 errors, 0 warnings, 1156 ms elapsed, cpu='X64 Regular'
