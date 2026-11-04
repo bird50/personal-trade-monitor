@@ -281,6 +281,23 @@ def test_overnight_gap_counts_against_new_day_loss_limit(rig):
     assert summary['day']['locked']==1
 
 
+def test_backfill_older_than_retention_is_kept_and_replayed(rig):
+    # Mac offline > 48h: recovered ticks are old by quote time but newly received.
+    approve(rig);step(rig,[(3,2500,2500.2)])
+    assert len(rig['paper'].positions('open'))==1
+    later=rig['base']+50*3600
+    feed(rig,[(4,2494.9,2495.1),(5,2500,2500.2)],now=later)
+    read=rig['ticks'].read('XMGlobal-MT5 7','GOLD',1)
+    assert [t['seq'] for t in read['ticks']]==[2,3]
+    events=rig['paper'].step(rig['ticks'],now=later)
+    assert events[0]['event']=='paper_close' and events[0]['reason']=='SL'
+    assert rig['paper'].summary(now=later)['status']!='tick_history_gap_review_required'
+    # Rows received more than 48h earlier are still rotated out.
+    feed(rig,[(6,2500,2500.2)],now=later+48*3600+1)
+    remaining=rig['ticks'].read('XMGlobal-MT5 7','GOLD',0)
+    assert [t['seq'] for t in remaining['ticks']]==[4]
+
+
 def test_tick_batches_idempotent_and_contiguous(rig):
     batch,now=feed(rig,[(3,2500,2500.2),(3,2500.1,2500.3)])
     assert rig['ticks'].insert(batch,now=now) is False

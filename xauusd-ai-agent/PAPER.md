@@ -57,7 +57,7 @@ Equity = balance + unrealized PnL ที่ mark ด้วยราคาฝั�
 
 EA ใช้ CopyTicks พร้อม cursor แบบต่อเนื่อง ส่งสูงสุด 2,048 ticks ต่อ batch ไม่ตัดกลาง millisecond และรอ ack ก่อนเลื่อน cursor หาก ack หายหรือมี exporter อื่นเลื่อน cursor จะอ่าน cursor ปัจจุบันแล้วส่งต่อ ดึง tick history คืนหลัง EA/เครือข่ายหยุดได้ตามข้อมูลที่โบรกเกอร์มี ไม่ส่งเฉพาะ quote ล่าสุดอย่างเดียว
 
-Receiver ตรวจลำดับ, ordinal ใน millisecond, coverage, server/symbol/demo, clock และ token เก็บ tick ไว้ 48 ชั่วโมง เมื่อ Python หยุดแล้วกลับมา จะ replay ticks เพื่อปิดสถานะเดิมตามลำดับ แต่ไม่เปิด entry ใหม่จาก quote เก่า หากประวัติที่ยังไม่ได้อ่านหายหรือถูกหมุนออก จะหยุดที่ `tick_history_gap_review_required` และคงสถานะเดิมไว้ ไม่เดาราคา fill จาก OHLC
+Receiver ตรวจลำดับ, ordinal ใน millisecond, coverage, server/symbol/demo, clock และ token เก็บ tick ไว้ 48 ชั่วโมงนับจากเวลาที่ receiver ได้รับ (ไม่ใช่เวลาของ quote) ดังนั้น tick ย้อนหลังที่ EA ส่งคืนหลัง Mac/MT5 ปิดเกิน 48 ชั่วโมงยังอ่านได้จนกว่า Paper จะ replay เมื่อ Python หยุดแล้วกลับมา จะ replay ticks เพื่อปิดสถานะเดิมตามลำดับ แต่ไม่เปิด entry ใหม่จาก quote เก่า หากประวัติที่ยังไม่ได้อ่านหายหรือถูกหมุนออก จะหยุดที่ `tick_history_gap_review_required` และคงสถานะเดิมไว้ ไม่เดาราคา fill จาก OHLC
 
 Coverage อาศัยประวัติที่ MT5/โบรกเกอร์ส่งกลับ การจับคู่จำลองไม่ได้พิสูจน์สภาพคล่องหรือ fill ที่จะได้จริงในตลาด หาก offset ของ stream เปลี่ยน Receiver จะปฏิเสธ batch จนตรวจ timezone/coverage ก่อน ไม่แปลงประวัติข้าม DST เอง
 

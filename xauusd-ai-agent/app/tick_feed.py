@@ -83,6 +83,8 @@ class TickStore:
                 bid TEXT NOT NULL, ask TEXT NOT NULL, received_at REAL NOT NULL,
                 PRIMARY KEY(server,symbol,seq), UNIQUE(server,symbol,time_server_ms,ordinal))""")
             db.execute("CREATE INDEX IF NOT EXISTS mt5_ticks_retention ON mt5_ticks(utc_ms)")
+            # Retention is by receipt time, so recovered history stays readable.
+            db.execute("CREATE INDEX IF NOT EXISTS mt5_ticks_received ON mt5_ticks(received_at)")
             db.execute("""CREATE TABLE IF NOT EXISTS mt5_tick_batches (
                 server TEXT NOT NULL,symbol TEXT NOT NULL,from_ms INTEGER NOT NULL,through_ms INTEGER NOT NULL,
                 digest TEXT NOT NULL,received_at REAL NOT NULL,PRIMARY KEY(server,symbol,from_ms,through_ms))""")
@@ -144,7 +146,9 @@ class TickStore:
             db.execute("INSERT INTO mt5_tick_batches VALUES(?,?,?,?,?,?)",(*key,batch.from_server_ms,batch.through_server_ms,digest,now))
             db.execute("INSERT INTO mt5_tick_streams VALUES(?,?,?,?,?,?) ON CONFLICT(server,symbol) DO UPDATE SET through_server_ms=excluded.through_server_ms,last_seq=excluded.last_seq,updated_at=excluded.updated_at",
                 (*key,batch.through_server_ms,batch.observed_utc_offset_s,seq,now))
-            db.execute("DELETE FROM mt5_ticks WHERE utc_ms<?",(int((now-172800)*1000),))
+            # Age by receipt, not quote time: a backfill of ticks older than the
+            # window must survive until Paper replays it, or it becomes a gap.
+            db.execute("DELETE FROM mt5_ticks WHERE received_at<?",(now-172800,))
             db.execute("DELETE FROM mt5_tick_batches WHERE received_at<?",(now-172800,))
         return True
 
