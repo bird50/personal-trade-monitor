@@ -1,0 +1,107 @@
+//@version=6
+strategy("XAUUSD H1 + M5 Signal v0.1", overlay = true, pyramiding = 0,
+     initial_capital = 10000, default_qty_type = strategy.fixed, default_qty_value = 1,
+     commission_type = strategy.commission.percent, commission_value = 0.01,
+     slippage = 2, process_orders_on_close = true,
+     calc_on_every_tick = false, calc_on_order_fills = false)
+
+// Research defaults, not calibrated to a broker. Orders are simulated by TradingView.
+int fastLen = input.int(50, "H1 fast EMA", minval = 1, group = "H1 trend")
+int slowLen = input.int(200, "H1 slow EMA", minval = 2, group = "H1 trend")
+int entryLen = input.int(20, "M5 entry EMA", minval = 1, group = "M5 signal")
+int rsiLen = input.int(14, "RSI length", minval = 1, group = "M5 signal")
+float rsiMid = input.float(50, "RSI midpoint", minval = 1, maxval = 99, group = "M5 signal")
+float rsiLow = input.float(30, "RSI oversold", minval = 0, maxval = 99, group = "M5 signal")
+float rsiHigh = input.float(70, "RSI overbought", minval = 1, maxval = 100, group = "M5 signal")
+int diLen = input.int(14, "DI length", minval = 1, group = "M5 signal")
+int adxLen = input.int(14, "ADX smoothing", minval = 1, group = "M5 signal")
+float minAdx = input.float(20, "Minimum ADX", minval = 0, group = "M5 signal")
+int atrLen = input.int(14, "ATR length", minval = 1, group = "Risk")
+float stopAtr = input.float(1.5, "SL / ATR", minval = 0.1, step = 0.1, group = "Risk")
+float rewardRisk = input.float(2, "Target reward / risk", minval = 0.1, step = 0.1, group = "Risk")
+int contextLen = input.int(20, "Prior M5 range bars (context only)", minval = 2, group = "Context")
+bool sendAlerts = input.bool(true, "Enable signal alerts", group = "Alerts")
+
+if barstate.isfirst
+    if not timeframe.isminutes or timeframe.multiplier != 5
+        runtime.error("Use a 5-minute chart.")
+    if not chart.is_standard
+        runtime.error("Use standard candles, not synthetic chart prices.")
+    if not str.contains(syminfo.ticker, "XAUUSD")
+        runtime.error("Use an XAUUSD symbol.")
+    if fastLen >= slowLen or rsiLow >= rsiMid or rsiMid >= rsiHigh
+        runtime.error("Require fast EMA < slow EMA and RSI low < midpoint < high.")
+
+// Every H1 expression is offset. lookahead_on alone would leak future data.
+[h1Close, h1Fast, h1Slow, h1BarClose, h1Bars] = request.security(syminfo.tickerid, "60",
+     [close[1], ta.ema(close, fastLen)[1], ta.ema(close, slowLen)[1], time_close[1], bar_index[1]],
+     gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+float entryEma = ta.ema(close, entryLen)
+float rsi = ta.rsi(close, rsiLen)
+[plusDi, minusDi, adx] = ta.dmi(diLen, adxLen)
+float atr = ta.atr(atrLen)
+float priorRangeLow = ta.lowest(low, contextLen)[1]
+float priorRangeHigh = ta.highest(high, contextLen)[1]
+bool crossUp = ta.crossover(close, entryEma)
+bool crossDown = ta.crossunder(close, entryEma)
+bool bullish = h1Close > h1Fast and h1Fast > h1Slow
+bool bearish = h1Close < h1Fast and h1Fast < h1Slow
+bool ready = h1Bars >= slowLen - 1 and not na(adx) and not na(rsi) and not na(priorRangeLow) and not na(atr) and atr > 0
+bool eligible = barstate.isconfirmed and ready and strategy.position_size == 0
+bool buy = eligible and bullish and crossUp and rsi >= rsiMid and rsi < rsiHigh and adx >= minAdx and plusDi > minusDi
+bool sell = eligible and bearish and crossDown and rsi <= rsiMid and rsi > rsiLow and adx >= minAdx and minusDi > plusDi
+
+// Numeric values are emitted as JSON numbers; missing values as null.
+num(float value) =>
+    na(value) ? "null" : str.tostring(value, "#.########")
+
+payload(string side, float entry, float stop, float target) =>
+    string signalId = syminfo.tickerid + ":5:" + str.tostring(time_close) + ":" + side
+    string msg = '{"schema_version":1,"strategy_version":"0.1","event":"signal"'
+    msg += ',"signal_id":"' + signalId + '","symbol":"' + syminfo.tickerid + '","timeframe":"5"'
+    msg += ',"bar_close_ms":' + str.tostring(time_close) + ',"candle_confirmed":true,"side":"' + side + '"'
+    msg += ',"entry_basis":"signal_close","entry":' + num(entry) + ',"sl":' + num(stop) + ',"tp":' + num(target)
+    msg += ',"risk_reward":' + num(math.abs(target - entry) / math.abs(entry - stop))
+    msg += ',"h1":{"confirmed":true,"bar_close_ms":' + str.tostring(h1BarClose)
+    msg += ',"trend":"' + (bullish ? "bullish" : "bearish") + '","close":' + num(h1Close)
+    msg += ',"ema_fast":' + num(h1Fast) + ',"ema_slow":' + num(h1Slow) + '}'
+    msg += ',"m5":{"open":' + num(open) + ',"high":' + num(high) + ',"low":' + num(low) + ',"close":' + num(close)
+    msg += ',"ema":' + num(entryEma) + ',"rsi":' + num(rsi) + ',"adx":' + num(adx) + ',"atr":' + num(atr)
+    msg += ',"plus_di":' + num(plusDi) + ',"minus_di":' + num(minusDi) + '}'
+    msg += ',"context":{"prior_range_low":' + num(priorRangeLow) + ',"prior_range_high":' + num(priorRangeHigh)
+    msg += ',"range_bars":' + str.tostring(contextLen) + ',"market_structure":null}}'
+    msg
+
+var float activeEntry = na
+var float activeSl = na
+var float activeTp = na
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    activeEntry := na
+    activeSl := na
+    activeTp := na
+
+if buy or sell
+    float direction = buy ? 1.0 : -1.0
+    // Freeze levels at signal time. A minimum one-tick distance avoids zero risk.
+    float stopDistance = math.max(syminfo.mintick, math.round_to_mintick(atr * stopAtr))
+    activeEntry := math.round_to_mintick(close)
+    activeSl := math.round_to_mintick(activeEntry - direction * stopDistance)
+    float targetDistance = math.max(syminfo.mintick, math.round_to_mintick(stopDistance * rewardRisk))
+    activeTp := math.round_to_mintick(activeEntry + direction * targetDistance)
+    if buy
+        strategy.entry("Long", strategy.long, disable_alert = true)
+        strategy.exit("Long SL/TP", "Long", stop = activeSl, limit = activeTp, disable_alert = true)
+    else
+        strategy.entry("Short", strategy.short, disable_alert = true)
+        strategy.exit("Short SL/TP", "Short", stop = activeSl, limit = activeTp, disable_alert = true)
+    if sendAlerts
+        alert(payload(buy ? "BUY" : "SELL", activeEntry, activeSl, activeTp), alert.freq_once_per_bar_close)
+
+plot(entryEma, "M5 EMA", color.orange)
+plot(h1Fast, "Confirmed H1 fast EMA", color.teal)
+plot(h1Slow, "Confirmed H1 slow EMA", color.blue)
+plot(activeEntry, "Signal entry", color.gray, style = plot.style_linebr)
+plot(activeSl, "Fixed SL", color.red, style = plot.style_linebr)
+plot(activeTp, "Fixed TP", color.green, style = plot.style_linebr)
+plotshape(buy, title = "BUY signal", style = shape.triangleup, location = location.belowbar, color = color.lime, size = size.small, text = "BUY")
+plotshape(sell, title = "SELL signal", style = shape.triangledown, location = location.abovebar, color = color.red, size = size.small, text = "SELL")

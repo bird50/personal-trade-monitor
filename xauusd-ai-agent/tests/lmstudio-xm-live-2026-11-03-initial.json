@@ -1,0 +1,27 @@
+{
+  "synthetic_data": true,
+  "temporary_database": true,
+  "variant": "xm",
+  "tested_at_utc_s": 1793663308.875369,
+  "webhook_receipt_ms": 7.1,
+  "elapsed_seconds": 73.5,
+  "analysis": {
+    "signal_record_id": 1,
+    "status": "failed",
+    "attempts": 1,
+    "model": "qwen/qwen3.8-27b",
+    "prompt_version": "signal-filter-v3",
+    "result": null,
+    "error_code": "incomplete_response",
+    "updated_at": 1793663308.775608,
+    "ai_decision": "WAIT",
+    "risk_status": "not_evaluated",
+    "effective_decision": "WAIT",
+    "confirmed_quantity": null,
+    "mode": "paper_simulation"
+  },
+  "risk": {
+    "status": "not_evaluated",
+    "signal_record_id": 1
+  }
+}

@@ -1,0 +1,11 @@
+.venv/
+.env
+.env.mt5
+mt5/*-token.txt
+__pycache__/
+.pytest_cache/
+data/*.db*
+*.log
+.runtime/
+mac/build/
+mac/.module-cache/

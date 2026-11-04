@@ -1,0 +1,77 @@
+{
+  "schema_version": 2,
+  "strategy_version": "0.2",
+  "event": "signal",
+  "signal_id": "OANDA:XAUUSD:5:1793523600000:BUY:0.2",
+  "symbol": "OANDA:XAUUSD",
+  "timeframe": "5",
+  "bar_close_ms": 1793523600000,
+  "candle_confirmed": true,
+  "side": "BUY",
+  "entry_basis": "signal_close",
+  "entry": 2500,
+  "sl": 2495,
+  "tp": 2510,
+  "risk_reward": 2,
+  "h1": {
+    "confirmed": true,
+    "bar_close_ms": 1793520000000,
+    "trend": "bullish",
+    "close": 2498,
+    "ema_fast": 2490,
+    "ema_slow": 2480
+  },
+  "m5": {
+    "open": 2498,
+    "high": 2502,
+    "low": 2496,
+    "close": 2500,
+    "ema": 2499,
+    "rsi": 55,
+    "adx": 24,
+    "atr": 3,
+    "plus_di": 28,
+    "minus_di": 15
+  },
+  "context": {
+    "prior_range_low": 2490,
+    "prior_range_high": 2505,
+    "range_bars": 20,
+    "market_structure": {
+      "timeframe": "5",
+      "method": "confirmed_pivots",
+      "left_bars": 3,
+      "right_bars": 3,
+      "max_age_bars": 120,
+      "state": "bullish",
+      "recent_high": {
+        "price": 2512,
+        "pivot_close_ms": 1793519700000,
+        "confirmed_at_ms": 1793520600000,
+        "age_bars": 10,
+        "active": true
+      },
+      "previous_high": {
+        "price": 2508,
+        "pivot_close_ms": 1793513700000,
+        "confirmed_at_ms": 1793514600000,
+        "age_bars": 30,
+        "active": true
+      },
+      "recent_low": {
+        "price": 2497,
+        "pivot_close_ms": 1793521200000,
+        "confirmed_at_ms": 1793522100000,
+        "age_bars": 5,
+        "active": true
+      },
+      "previous_low": {
+        "price": 2490,
+        "pivot_close_ms": 1793510700000,
+        "confirmed_at_ms": 1793511600000,
+        "age_bars": 40,
+        "active": true
+      }
+    }
+  }
+}
