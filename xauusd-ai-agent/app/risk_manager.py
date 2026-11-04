@@ -8,6 +8,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from . import bypass as bypass_rules
 from .models import Signal
 from .structure import confirmation_blockers
 
@@ -63,9 +64,11 @@ class RiskManager:
         self.snapshot = policy.model_dump(mode="json", exclude_none=True)
         self.policy_hash = hashlib.sha256(json.dumps(self.snapshot, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
-    def evaluate(self, signal: Signal, ai_result: dict, now: float | None = None) -> dict:
+    def evaluate(self, signal: Signal, ai_result: dict, now: float | None = None, bypass: dict | None = None) -> dict:
         now = time.time() if now is None else now
         p = self.policy
+        bypass = {"ai": bool((bypass or {}).get("ai")), "risk": bool((bypass or {}).get("risk"))}
+        relaxed = bypass["risk"]
         reasons = confirmation_blockers(signal)
         spread = p.spread_price
         expires_at = signal.bar_close_ms / 1000 + p.max_signal_age_seconds
@@ -116,14 +119,18 @@ class RiskManager:
                 reasons.append("net_reward_risk_too_low")
             budget = p.equity_usd * p.risk_percent / 100
             notional_cap = p.equity_usd * p.max_notional_equity_multiple
-            raw_quantity = min(budget / loss_per_unit, notional_cap / (entry * value_per_unit), p.max_quantity)
+            # Risk bypass keeps per-trade risk sizing but drops the notional account cap.
+            limits = [budget / loss_per_unit, p.max_quantity]
+            if not relaxed:
+                limits.append(notional_cap / (entry * value_per_unit))
+            raw_quantity = min(limits)
             steps = (raw_quantity / p.quantity_step).to_integral_value(rounding=ROUND_FLOOR)
             quantity = steps * p.quantity_step
             planned_loss = quantity * loss_per_unit
             notional = quantity * entry * value_per_unit
             if quantity < p.min_quantity:
                 reasons.append("quantity_below_minimum")
-            if planned_loss > budget or notional > notional_cap:
+            if planned_loss > budget or (notional > notional_cap and not relaxed):
                 reasons.append("sizing_limit_exceeded")
             values = {
                 "entry": entry, "sl": stop, "tp": target,
@@ -137,9 +144,14 @@ class RiskManager:
                 "planned_loss_usd": planned_loss, "planned_reward_usd": quantity * reward_per_unit,
                 "notional_usd": notional, "notional_cap_usd": notional_cap,
             }
+        reasons = list(dict.fromkeys(reasons))
+        waivable = bypass_rules.waivable(bypass)
+        waived = [code for code in reasons if code in waivable]
+        reasons = [code for code in reasons if code not in waivable]
         return {
             "status": "rejected" if reasons else "passed", "mode": p.mode,
-            "reason_codes": list(dict.fromkeys(reasons)), "policy_version": p.policy_version,
+            "reason_codes": reasons, "policy_version": p.policy_version,
+            "bypass": bypass, "waived_reason_codes": waived,
             "policy_sha256": self.policy_hash, "policy": self.snapshot,
             "evaluated_at": now, "expires_at": expires_at,
             "quantity_unit": p.quantity_unit,

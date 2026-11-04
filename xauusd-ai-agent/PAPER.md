@@ -41,6 +41,8 @@ Daily loss 2%, จำนวนสถานะ 1 และ drift 0.25 ATR เป�
 
 Equity = balance + unrealized PnL ที่ mark ด้วยราคาฝั่งปิด; entry commission ถูกหักจาก balance ทันที ส่วน exit commission หักเมื่อปิด Daily loss รวม unrealized PnL และค่าธรรมเนียม วันใหม่ใช้ equity จาก mark ก่อนหน้าเป็น baseline เพื่อให้ gap ข้ามวันนับเป็นขาดทุนด้วย หากแตะเกณฑ์จะล็อกการเปิดสถานะใหม่จนวันถัดไป ยังคงติดตาม SL/TP ของสถานะเดิม ไม่มีการบังคับปิดเพียงเพราะชน daily limit
 
+เมื่อเปิดโหมด **ยกเว้น Risk** Paper ข้าม daily loss limit, จำนวนสถานะสูงสุด, ความเสี่ยงรวม, เพดาน notional, drift, spread และ RR สุทธิตอน fill แต่ยังคุมความเสี่ยงต่อไม้ 0.5% ของ equity และยังตรวจ tick, อายุ quote, fill ระหว่าง SL/TP และ equity ดู [RISK.md](RISK.md#โหมดยกเว้น-ai-และ-risk-manager)
+
 เมื่อแก้ policy แล้ว hash ไม่ตรงกับบัญชีเดิม ระบบหยุดรับ entry ใหม่ แต่ยังปิดสถานะเดิมด้วยต้นทุนที่บันทึกไว้ตอนเปิด ไม่รีเซ็ตยอดทุนหรือประวัติอัตโนมัติ ต้องตรวจและอนุมัติการย้าย policy ของบัญชีอย่างชัดเจนก่อนใช้ค่าใหม่ต่อ
 
 ## ติดตั้ง tick exporter ใน MT5

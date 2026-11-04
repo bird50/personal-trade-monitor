@@ -1,6 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
-let state = null, selectedTab = 'open', busy = false, providerBusy=false, refreshing = false, toastTimer;
+let state = null, selectedTab = 'open', busy = false, providerBusy=false, bypassBusy=false, armed=null, armTimer, refreshing = false, toastTimer;
+const providerName = p => p==='codex'?'Codex':p==='bypass'?'ยกเว้น AI':'LM Studio';
 const money = value => value == null ? '—' : Number(value).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 const num = value => value == null ? '—' : Number(value).toLocaleString('en-US',{maximumFractionDigits:3});
 const time = seconds => !seconds ? '—' : new Date(seconds*1000).toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
@@ -16,6 +17,7 @@ function render(){
  const connected=state?.connected===true;
  $('pause').disabled=!connected||busy;
  $('providerLm').disabled=!connected||providerBusy;$('providerCodex').disabled=!connected||providerBusy;
+ $('bypassAi').disabled=!connected||bypassBusy;$('bypassRisk').disabled=!connected||bypassBusy;
  dot('systemDot',connected);
  text('lastUpdate',connected?'อัปเดต '+time(state.checked_at)+' · รีเฟรชทุก 5 วินาที':'ไม่พบระบบที่ 127.0.0.1:8002');
  const ns=state?.notifications;
@@ -29,18 +31,21 @@ function render(){
  }
  const a=state.account,f=state.feed,ai=state.ai,t=state.ticks||{};
  const selection=state.ai_selection||{provider:'lm_studio',label:'LM Studio',model:state.model};
- const codex=selection.provider==='codex',aiReady=ai.ready??(ai.available&&ai.model_loaded);
+ const bp=state.bypass||{ai:false,risk:false};
+ const codex=selection.provider==='codex',aiReady=ai.ready??(ai.available&&ai.model_loaded),aiOk=aiReady||bp.ai;
+ renderBypass(bp);
  const codexIssue={codex_cli_unavailable:'ไม่พบ Codex CLI ในเครื่อง ตรวจการติดตั้ง',codex_usage_limit:'ถึงขีดจำกัดการใช้ Codex รอรีเซ็ตโควตาหรือเลือก LM Studio',codex_model_unavailable:'บัญชีนี้ยังเรียกโมเดล Codex ที่ตั้งไว้ไม่ได้'}[ai.error]||'Codex ยังไม่พร้อม กรุณาใช้ codex login ด้วยบัญชี ChatGPT ใน Terminal';
  for(const [id,provider] of [['providerLm','lm_studio'],['providerCodex','codex']]){const chosen=selection.provider===provider;$(id).classList.toggle('selected',chosen);$(id).setAttribute('aria-pressed',String(chosen))}
  text('providerModel',selection.label+' · '+selection.model);
  const active=selection.in_flight;
- text('providerUsage',active?`กำลังวิเคราะห์ #${active.signal_record_id} ด้วย ${active.provider==='codex'?'Codex':'LM Studio'}`:codex?'ใช้โควตา Codex · ส่งสัญญาณไป OpenAI':'ประมวลผลผ่าน LM Studio ตามที่ตั้งไว้');
- text('pipeline',`◈  XM → Python → ${selection.label} → Risk → Paper`);
+ text('providerUsage',active?`กำลังวิเคราะห์ #${active.signal_record_id} ด้วย ${providerName(active.provider)}`:bp.ai?'ไม่ถูกเรียกใช้ขณะยกเว้น AI':codex?'ใช้โควตา Codex · ส่งสัญญาณไป OpenAI':'ประมวลผลผ่าน LM Studio ตามที่ตั้งไว้');
+ text('pipeline',`◈  XM → Python → ${bp.ai?'(ยกเว้น AI)':selection.label} → ${bp.risk?'(ยกเว้น Risk)':'Risk'} → Paper`);
  $('aiStatus').parentElement.querySelector('small').textContent=codex?'CODEX · CHATGPT':'LM STUDIO';
  const recovering=!a.valuation_fresh&&t.status==='catching_up';
- const workers=Object.values(state.workers).every(Boolean),ready=a.entries_enabled&&f.available&&aiReady&&workers;
- dot('systemDot',ready);text('systemTitle',a.operator_paused?'พักการเปิดไม้ใหม่ · ติดตามไม้เดิมต่อ':ready?'ระบบพร้อม · รอสัญญาณเข้าเงื่อนไข':'ระบบทำงาน · มีเงื่อนไขที่ต้องตรวจสอบ');
- const warning=!f.available?'ราคาจาก MT5 ยังไม่สด ตรวจการเชื่อมต่อ XM และ EA ทั้งสองตัว':!aiReady?(codex?codexIssue:'LM Studio ยังไม่พร้อม ตรวจ Server และโมเดลที่ตั้งไว้'):recovering?`กำลังรับ Tick ย้อนหลัง · ตามหลัง ${duration(t.coverage_age_seconds)} · EA ยังส่งข้อมูลอยู่ รอให้ตามทันก่อนเปิดไม้ใหม่`:!a.valuation_fresh?'ยังไม่มี Tick สดสำหรับประเมินบัญชี ตรวจ EA XMPaperTicks':!workers?'มี worker หยุดทำงาน กรุณาตรวจ log':!a.policy_matches?'กฎบัญชีเปลี่ยน ระบบระงับการเปิดสถานะใหม่':a.day?.locked?'ถึงเพดานขาดทุนรายวัน ระบบติดตามไม้เดิมต่อ':'';
+ const workers=Object.values(state.workers).every(Boolean),ready=a.entries_enabled&&f.available&&aiOk&&workers;
+ const bypassLabel=bp.ai&&bp.risk?'ยกเว้น AI และ Risk':bp.ai?'ยกเว้น AI':bp.risk?'ยกเว้น Risk':'';
+ dot('systemDot',ready);text('systemTitle',a.operator_paused?'พักการเปิดไม้ใหม่ · ติดตามไม้เดิมต่อ':ready?(bypassLabel?'ระบบพร้อม · โหมด'+bypassLabel:'ระบบพร้อม · รอสัญญาณเข้าเงื่อนไข'):'ระบบทำงาน · มีเงื่อนไขที่ต้องตรวจสอบ');
+ const warning=!f.available?'ราคาจาก MT5 ยังไม่สด ตรวจการเชื่อมต่อ XM และ EA ทั้งสองตัว':!aiOk?(codex?codexIssue:'LM Studio ยังไม่พร้อม ตรวจ Server และโมเดลที่ตั้งไว้'):recovering?`กำลังรับ Tick ย้อนหลัง · ตามหลัง ${duration(t.coverage_age_seconds)} · EA ยังส่งข้อมูลอยู่ รอให้ตามทันก่อนเปิดไม้ใหม่`:!a.valuation_fresh?'ยังไม่มี Tick สดสำหรับประเมินบัญชี ตรวจ EA XMPaperTicks':!workers?'มี worker หยุดทำงาน กรุณาตรวจ log':!a.policy_matches?'กฎบัญชีเปลี่ยน ระบบระงับการเปิดสถานะใหม่':a.day?.locked&&!bp.risk?'ถึงเพดานขาดทุนรายวัน ระบบติดตามไม้เดิมต่อ':bypassLabel?`โหมด${bypassLabel}: ${bp.ai?'ไม่เรียก AI และไม่ตรวจโครงสร้างตลาด':''}${bp.ai&&bp.risk?' · ':''}${bp.risk?'ไม่ใช้ตัวกรองกลยุทธ์ เพดานขาดทุนรายวัน จำนวนไม้สูงสุด และเพดาน notional':''} · ใช้เพื่อทดลองใน Paper เท่านั้น`:'';
  $('errorBanner').classList.toggle('hidden',!warning);text('errorBanner',warning);
  text('pause',a.operator_paused?'▶ เปิดรับไม้ใหม่':'Ⅱ พักเปิดไม้ใหม่');
  text('feedStatus',f.available?'รับราคาสด':'ราคาไม่พร้อม');dot('feedDot',f.available);text('feedDetail',f.bid!=null?`${f.symbol} ${num(f.bid)} / ${num(f.ask)} · ${Math.round(f.age_seconds)}s`:'รอ EA XMPriceBridge');
@@ -48,7 +53,7 @@ function render(){
  text('paperStatus',a.valuation_fresh?'ติดตาม Tick สด':recovering?'กำลังรับ Tick ย้อนหลัง':'รอ Tick / ตรวจข้อมูล');dot('paperDot',a.valuation_fresh);text('paperDetail',recovering?'ตามหลัง '+duration(t.coverage_age_seconds):a.status+(a.mark_age_seconds!=null?' · '+Math.round(a.mark_age_seconds)+'s':''));
  text('equity',money(a.equity_usd));text('balance',money(a.balance_usd));signed('floating',a.unrealized_pnl_usd);signed('realized',a.realized_cash_pnl_usd);
  text('valuation',a.valuation_fresh?'มูลค่าบัญชี ณ Tick ล่าสุด':'มูลค่าจาก Tick เดิม · ราคายังไม่สด');text('openCount',`${a.open_positions} สถานะเปิด · Risk $${money(a.open_planned_risk_usd)}`);text('closedCount',`${a.closed_trades} เทรดปิด · รวมค่าธรรมเนียมที่บันทึกแล้ว`);
- text('risk',state.policy.risk_percent+'%');text('dailyRisk',state.policy.daily_loss_percent+'%');text('maxPositions',state.policy.max_positions+' สถานะ');text('entryStatus',a.operator_paused?'Ⅱ พักการเปิดไม้ใหม่ตามคำสั่งผู้ใช้':a.entries_enabled?'● ผ่านเงื่อนไขบัญชี · รอ AI / Risk ต่อสัญญาณ':'● ยังไม่ผ่านเงื่อนไขบัญชี');
+ text('risk',state.policy.risk_percent+'%');text('dailyRisk',bp.risk?'ยกเว้น':state.policy.daily_loss_percent+'%');text('maxPositions',bp.risk?'ไม่จำกัด':state.policy.max_positions+' สถานะ');text('entryStatus',a.operator_paused?'Ⅱ พักการเปิดไม้ใหม่ตามคำสั่งผู้ใช้':a.entries_enabled?(bypassLabel?'● เปิดรับไม้ · โหมด'+bypassLabel:'● ผ่านเงื่อนไขบัญชี · รอ AI / Risk ต่อสัญญาณ'):'● ยังไม่ผ่านเงื่อนไขบัญชี');
  renderChart(state.equity_history);renderPositions();renderAnalysis();renderEvents();
 }
 function renderChart(points){
@@ -64,7 +69,18 @@ function renderChart(points){
 function renderPositions(){if(!state?.connected)return;const rows=selectedTab==='open'?state.positions:state.closed;const items=[...rows].reverse();text('positionBadge',state.account.open_positions);$('positionsEmpty').classList.toggle('hidden',items.length>0);$('positions').innerHTML=items.map(p=>`<tr><td><b class="${p.side==='BUY'?'positive':'negative'}">${esc(p.side)}</b> <small>#${p.id} · ${time((selectedTab==='open'?p.opened_utc_ms:p.closed_utc_ms)/1000)}</small></td><td>${num(p.quantity)}</td><td>${num(p.entry)}</td><td>${num(p.sl)}<small>${num(p.tp)}</small></td><td class="right ${Number(p.net_pnl??p.unrealized_pnl)>0?'positive':Number(p.net_pnl??p.unrealized_pnl)<0?'negative':''}">${money(p.net_pnl??p.unrealized_pnl)}<small>${selectedTab==='closed'?esc(p.exit_reason):'ยังไม่ปิดสถานะ'}</small></td></tr>`).join('');
  const empty=$('positionsEmpty');empty.querySelector('strong').textContent=selectedTab==='open'?'ยังไม่มีสถานะเปิด':'ยังไม่มีเทรดที่ปิดแล้ว';empty.querySelector('p').textContent=selectedTab==='open'?'ระบบจะเปิดเมื่อมีสัญญาณผ่าน AI และ Risk ครบทุกเงื่อนไข':'เมื่อปิดตาม SL/TP ระบบจะบันทึกกำไรขาดทุนไว้ที่นี่';
 }
-function renderAnalysis(){const a=state.analysis; text('analysisModel',a?`${a.provider==='codex'?'Codex':'LM Studio'} · ${a.model||'ยังไม่ระบุโมเดล'}`:'รอสัญญาณใหม่');text('candidateCount',state.candidate_count+' สัญญาณ');text('engineStatus','Signal engine · '+(state.engine.status||'—'));if(!a)return;
+function renderBypass(bp){
+ $('bypassBar').classList.toggle('active',bp.ai||bp.risk);
+ for(const [id,name,label] of [['bypassAi','ai','ยกเว้น AI'],['bypassRisk','risk','ยกเว้น Risk']]){const on=!!bp[name];$(id).classList.toggle('selected',on);$(id).classList.toggle('armed',armed===name);$(id).setAttribute('aria-pressed',String(on));text(id,armed===name?'กดอีกครั้งเพื่อยืนยัน':on?'✓ '+label:label)}
+ text('bypassState',bp.ai&&bp.risk?'ยกเว้น AI และ Risk':bp.ai?'ยกเว้น AI · ยังใช้ Risk':bp.risk?'ยกเว้น Risk · ยังใช้ AI':'ใช้ AI และ Risk ตามปกติ');
+ text('bypassDetail',bp.ai||bp.risk?'ยังตรวจราคาสด ลำดับ Tick ขนาดไม้ต่อไม้ และ SL/TP · กดอีกครั้งเพื่อยกเลิก':'กดปุ่มเพื่อข้ามขั้นตอนนั้นกับสัญญาณใหม่');
+}
+async function toggleBypass(name){if(bypassBusy||!state?.connected)return;const enabling=!state.bypass?.[name];
+ if(enabling&&armed!==name){armed=name;clearTimeout(armTimer);armTimer=setTimeout(()=>{armed=null;render()},5000);toast(name==='ai'?'กดอีกครั้งภายใน 5 วินาทีเพื่อยกเว้น AI · สัญญาณใหม่จะไม่ผ่าน AI และโครงสร้างตลาด':'กดอีกครั้งภายใน 5 วินาทีเพื่อยกเว้น Risk · ข้ามตัวกรองกลยุทธ์และกฎบัญชี');render();return}
+ armed=null;clearTimeout(armTimer);bypassBusy=true;render();
+ try{const r=await bridge('bypass',{[name]:enabling});toast(r.error||`${enabling?'เปิด':'ยกเลิก'}การยกเว้น ${name==='ai'?'AI':'Risk'} แล้ว · มีผลกับสัญญาณใหม่`)}catch(e){toast('บันทึกโหมดยกเว้นไม่สำเร็จ')}finally{bypassBusy=false;await refresh()}}
+$('bypassAi').onclick=()=>toggleBypass('ai');$('bypassRisk').onclick=()=>toggleBypass('risk');
+function renderAnalysis(){const a=state.analysis; text('analysisModel',a?`${providerName(a.provider)} · ${a.model||'ยังไม่ระบุโมเดล'}`:'รอสัญญาณใหม่');text('candidateCount',state.candidate_count+' สัญญาณ');text('engineStatus','Signal engine · '+(state.engine.status||'—'));if(!a)return;
  text('analysisStatus',a.status.toUpperCase());text('decision',a.effective_decision);text('analysisTitle',`สัญญาณ #${a.signal_record_id} · AI ${a.ai_decision}`);text('analysisDetail',`Risk: ${a.risk_status} · ${new Date(a.updated_at*1000).toLocaleDateString('th-TH',{day:'numeric',month:'short'})} ${time(a.updated_at)}`);text('analysisReason',a.result?.reasons?.join('\n')||a.error_code||'รอ AI วิเคราะห์สัญญาณ ไม่เปิดสถานะจนกว่าจะผ่านการตรวจครบ');
 }
 function renderEvents(){const items=state.recent_events||[];$('eventsEmpty').classList.toggle('hidden',items.length>0);$('events').innerHTML=items.map(e=>`<div class="event ${esc(e.level)}"><span class="event-mark">${e.level==='warning'?'!':e.kind==='analysis'?'✧':e.kind==='paper_open'?'↗':e.kind==='paper_close'?'↙':'●'}</span><div class="event-body"><strong>${esc(e.title)}</strong><p>${esc(e.message)}</p><time>${new Date(e.at*1000).toLocaleDateString('th-TH',{day:'numeric',month:'short'})} · ${time(e.at)}</time></div></div>`).join('')}

@@ -8,7 +8,9 @@ from typing import Literal
 
 import httpx
 from fastapi import Request,Query
+from pydantic import model_validator
 
+from .bypass import BypassStore
 from .models import StrictModel
 from .mt5_bridge import MarketStore
 from .webhook import authenticate,bearer
@@ -26,6 +28,25 @@ class ProviderRequest(StrictModel):
     provider:Literal['lm_studio','codex']
 
 
+class BypassRequest(StrictModel):
+    ai:bool|None=None
+    risk:bool|None=None
+
+    @model_validator(mode='after')
+    def one_flag(self):
+        if self.ai is None and self.risk is None:
+            raise ValueError('Provide ai and/or risk')
+        return self
+
+
+BYPASS_TEXT={
+    ('ai',True):('ยกเว้น AI แล้ว','สัญญาณใหม่ไม่เรียก AI และไม่ตรวจโครงสร้างตลาด · ใช้ฝั่งของสัญญาณโดยตรง'),
+    ('ai',False):('กลับมาใช้ AI','สัญญาณใหม่ต้องผ่าน AI และโครงสร้างตลาด · ไม้ที่อนุมัติแบบยกเว้นและยังไม่เปิดจะถูกยกเลิก'),
+    ('risk',True):('ยกเว้น Risk Manager แล้ว','ข้ามตัวกรองกลยุทธ์ เพดานขาดทุนรายวัน จำนวนไม้สูงสุด และเพดาน notional · ยังคุมความเสี่ยงต่อไม้'),
+    ('risk',False):('กลับมาใช้ Risk Manager','สัญญาณใหม่ต้องผ่านกฎ Risk และกฎบัญชี · ไม้ที่อนุมัติแบบยกเว้นและยังไม่เปิดจะถูกยกเลิก'),
+}
+
+
 class ControlCenter:
     def __init__(self,app,feed_config):
         self.app,self.config,self.feed_config=app,app.state.settings,feed_config
@@ -39,6 +60,7 @@ class ControlCenter:
         self.market=MarketStore(feed_config.database_path)
         self.ticks=TickStore(feed_config.database_path)
         self.provider_store=AIProviderStore(self.db,self.config)
+        self.bypass_store=BypassStore(self.db)
         with self.db.connect() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS control_events (
                 id INTEGER PRIMARY KEY,event_key TEXT UNIQUE NOT NULL,kind TEXT NOT NULL,
@@ -74,6 +96,15 @@ class ControlCenter:
             with self.db.connect() as db:
                 self.event(db,'provider:'+str(time.time_ns()),'ai_provider_changed','info','เลือก AI · '+LABELS[provider],
                            'ใช้กับงานวิเคราะห์ถัดไป งานที่เริ่มแล้วใช้ AI เดิมจนจบ')
+        return result
+
+    def set_bypass(self,ai=None,risk=None):
+        result=self.bypass_store.set(ai=ai,risk=risk)
+        if result['changed']:
+            with self.db.connect() as db:
+                for name in result['changed']:
+                    title,message=BYPASS_TEXT[(name,result[name])]
+                    self.event(db,f'bypass:{name}:{time.time_ns()}','bypass_changed','warning' if result[name] else 'info',title,message)
         return result
 
     def record_health(self,name,healthy,label,*,failure_title=None,failure_message=None):
@@ -162,6 +193,7 @@ class ControlCenter:
                 'policy':{'risk_percent':str(self.app.state.risk_manager.policy.risk_percent),
                           'daily_loss_percent':str(self.app.state.paper.policy.daily_loss_limit_percent),
                           'max_positions':self.app.state.paper.policy.max_positions},
+                'bypass':{k:v for k,v in self.bypass_store.get().items() if k in ('ai','risk','updated_at')},
                 'model':choice['model'],'model_url':None if choice['provider']=='codex' else self.config.lm_studio_url,
                 'ai_selection':{**choice,'label':LABELS[choice['provider']],
                     'in_flight':None if active is None else dict(active),
@@ -229,3 +261,8 @@ def install_control_routes(app,config):
     def provider(request:Request,body:ProviderRequest):
         authenticate(bearer(request),config.api_token)
         return request.app.state.control.set_provider(body.provider)
+
+    @app.post('/dashboard/bypass')
+    def bypass(request:Request,body:BypassRequest):
+        authenticate(bearer(request),config.api_token)
+        return request.app.state.control.set_bypass(ai=body.ai,risk=body.risk)

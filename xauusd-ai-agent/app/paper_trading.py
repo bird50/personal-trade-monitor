@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from . import bypass as bypass_rules
 from .models import Signal
 from .risk_manager import Positive, RiskManager
 
@@ -67,6 +68,7 @@ class PaperEngine:
                 id INTEGER PRIMARY KEY CHECK(id=1),state_json TEXT NOT NULL)""")
             conn.execute("""CREATE TABLE IF NOT EXISTS paper_days (
                 day TEXT PRIMARY KEY,start_equity TEXT NOT NULL,locked INTEGER NOT NULL DEFAULT 0)""")
+            bypass_rules.ensure(conn)
             initial=format(policy.initial_balance_usd,'f')
             created=conn.execute("INSERT OR IGNORE INTO paper_account VALUES(1,?,?,?,?,?)",
                                 (initial,initial,now,self.policy_hash,self.policy_json)).rowcount
@@ -173,10 +175,13 @@ class PaperEngine:
         for decision in pending:
             report=json.loads(decision['report_json'])
             reason=None
+            current=bypass_rules.read(conn)
             if now>report['expires_at']:
                 reason='approval_expired'
             elif self._account(conn)['policy_hash']!=self.policy_hash or report['policy_sha256']!=self.risk.policy_hash:
                 reason='policy_changed'
+            elif not bypass_rules.still_allowed(report,current):
+                reason='bypass_disabled'
             if reason:
                 conn.execute("UPDATE paper_decisions SET status='rejected',reason=? WHERE signal_record_id=?",(reason,decision['signal_record_id']))
                 continue
@@ -196,23 +201,34 @@ class PaperEngine:
             open_positions=self._open(conn)
             _,equity,_=self._equity(conn)
             day,baseline,daily_limit,locked=self._day(conn,tick['utc_ms'])
-            if locked:
+            # Risk bypass skips account rules and fill-time strategy filters only.
+            relaxed=bool((report.get('bypass') or {}).get('risk')) and current['risk']
+            if locked and not relaxed:
                 reason='daily_loss_limit'
-            elif len(open_positions)>=self.policy.max_positions:
+            elif len(open_positions)>=self.policy.max_positions and not relaxed:
                 reason='max_positions'
             elif equity<=0:
                 reason='insufficient_equity'
             elif not (stop<entry<target if direction==1 else target<entry<stop):
                 reason='fill_outside_sl_tp'
-            elif abs(entry-D(signal.entry))>D(signal.m5.atr)*self.policy.max_entry_drift_atr:
+            elif not relaxed and abs(entry-D(signal.entry))>D(signal.m5.atr)*self.policy.max_entry_drift_atr:
                 reason='entry_price_drift'
-            elif (D(tick['ask'])-D(tick['bid']))/D(signal.m5.atr)>p.max_spread_atr:
+            elif not relaxed and (D(tick['ask'])-D(tick['bid']))/D(signal.m5.atr)>p.max_spread_atr:
                 reason='spread_atr_too_high'
             loss=(abs(entry-stop)+p.slippage_price_per_side)*p.usd_per_price_unit_per_quantity+p.commission_usd_per_unit_round_trip
             reward=(abs(target-entry)-p.slippage_price_per_side)*p.usd_per_price_unit_per_quantity-p.commission_usd_per_unit_round_trip
-            if reason is None and reward/loss<p.min_net_reward_risk:
+            if reason is None and not relaxed and reward/loss<p.min_net_reward_risk:
                 reason='fill_net_reward_risk'
-            if reason is None:
+            if reason is None and relaxed:
+                # Keep per-trade risk on actual equity; no aggregate, daily or notional room.
+                risk_fraction=p.risk_percent/100
+                liquidation=D(tick['bid'] if direction==1 else tick['ask'])
+                friction=(entry-liquidation)*direction*p.usd_per_price_unit_per_quantity+p.commission_usd_per_unit_round_trip/2
+                raw_qty=min(D(report['approved_quantity']),p.max_quantity,equity*risk_fraction/(loss+risk_fraction*friction))
+                quantity=(raw_qty/p.quantity_step).to_integral_value(rounding=ROUND_FLOOR)*p.quantity_step
+                if quantity<p.min_quantity:
+                    reason='risk_budget_below_minimum'
+            elif reason is None:
                 aggregate=sum((D(pos['planned_risk_usd']) for _,pos in open_positions),Decimal(0))
                 portfolio_room=max(Decimal(0),equity*self.policy.max_open_risk_percent/100-aggregate)
                 daily_room=max(Decimal(0),daily_limit-(baseline-equity)-aggregate)
@@ -245,7 +261,9 @@ class PaperEngine:
                 'notional_usd':format(entry*quantity*p.usd_per_price_unit_per_quantity,'f'),
                 'slippage_per_side':str(p.slippage_price_per_side),'commission_per_unit_round_trip':str(p.commission_usd_per_unit_round_trip),
                 'usd_per_price_unit':str(p.usd_per_price_unit_per_quantity),'price_tick':str(p.price_tick),
-                'paper_policy_hash':self.policy_hash,'risk_policy_hash':self.risk.policy_hash,'exit_model':'market_on_trigger'}
+                'paper_policy_hash':self.policy_hash,'risk_policy_hash':self.risk.policy_hash,'exit_model':'market_on_trigger',
+                'bypass':{'ai':bool((report.get('bypass') or {}).get('ai')),'risk':relaxed},
+                'waived_reason_codes':report.get('waived_reason_codes') or []}
             position_id=conn.execute("INSERT INTO paper_positions(signal_record_id,status,opened_ms,payload_json) VALUES(?,'open',?,?)",
                 (decision['signal_record_id'],tick['utc_ms'],json.dumps(position))).lastrowid
             balance=self._cash(conn,f'open:{position_id}',position_id,'entry_commission',-entry_fee,tick['utc_ms'])
@@ -334,6 +352,8 @@ class PaperEngine:
             age=None if state['last_tick_utc_ms'] is None else now-state['last_tick_utc_ms']/1000
             fresh=age is not None and 0<=age<=self.policy.max_entry_quote_age_seconds and state['status']=='running'
             day=conn.execute('SELECT * FROM paper_days ORDER BY day DESC LIMIT 1').fetchone()
+            bypass=bypass_rules.read(conn)
+            day_blocks=bool(day and day['locked']) and not bypass['risk']
             return {'mode':'paper_simulation','currency':'USD','quantity_unit':'simulated_ounce',
                 'initial_balance_usd':account['initial_balance'],'balance_usd':format(balance,'f'),
                 'equity_usd':format(equity,'f'),'unrealized_pnl_usd':format(floating,'f'),
@@ -346,7 +366,8 @@ class PaperEngine:
                 'valuation_fresh':fresh,
                 'policy_matches':account['policy_hash']==self.policy_hash,
                 'operator_paused':bool(state.get('operator_paused',False)),
-                'entries_enabled':account['policy_hash']==self.policy_hash and fresh and not state.get('operator_paused',False) and not (day and day['locked']) and equity>0,
+                'entries_enabled':account['policy_hash']==self.policy_hash and fresh and not state.get('operator_paused',False) and not day_blocks and equity>0,
+                'bypass':{'ai':bypass['ai'],'risk':bypass['risk']},
                 'day':None if day is None else dict(day),'activated_at_utc_s':account['activated_at']}
 
     def positions(self,status,after_id=0,limit=50):

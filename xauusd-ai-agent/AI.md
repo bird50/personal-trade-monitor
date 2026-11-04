@@ -14,6 +14,8 @@
 
 ใช้ `prompts/trading_analysis.txt` และ request version `signal-filter-v4` กับ structured output ตาม [LM Studio documentation](https://beta.lmstudio.ai/docs/developer/openai-compat/structured-output) คงคำอธิบายแหล่งข้อมูล XM และเวลา context แบบ broker server wall clock จาก v3 รุ่น v4 กำหนด `reasoning_effort=none` ตาม configuration สำหรับเซิร์ฟเวอร์ที่ทดสอบแล้ว ดู [ระบบสัญญาณ XM](XM-SIGNALS.md)
 
+เมื่อเปิดโหมด **ยกเว้น AI** worker จะไม่เรียก LM Studio หรือ Codex และไม่ใช้ `confirmation_blockers` ผลจะเป็นฝั่งของสัญญาณ บันทึก `provider=bypass` และ `model=none` จากนั้นยังผ่านขั้นตอน Risk และอายุสัญญาณตามปกติ ดู [RISK.md](RISK.md#โหมดยกเว้น-ai-และ-risk-manager)
+
 ผลต้องมี `decision`, `entry`, `sl`, `tp`, `risk_reward` และ `reasons` โมเดลห้ามกลับฝั่งสัญญาณ ห้ามเปลี่ยนราคา/RR ห้ามส่ง tool calls หรือข้อมูลที่ขาดโครงสร้าง ไม่ใช้ `reasoning_content` เป็นผลลัพธ์และไม่เก็บข้อความ reasoning
 
 Pine v0.1 ยังรับได้และต้อง WAIT เพราะ market_structure เป็น null ส่วน **v0.2 ส่ง confirmed pivot evidence** ให้ Python ตรวจทิศทาง อายุ ระดับที่ถูกทะลุ ตำแหน่ง Entry และความสัมพันธ์ SL/TP กับแนวรับแนวต้านตาม [กฎ v0.2](pine/structure-v0.2.md) ก่อนส่งรายการ `confirmation_blockers` ให้โมเดล ถ้ามี blocker แต่โมเดลยังยืนยัน BUY/SELL ระบบจะบันทึก `failed / unsupported_confirmation` หากไม่มี blocker โมเดลอาจยืนยันฝั่งเดิมหรือ WAIT ได้ กฎนี้ยังไม่ใช่ Risk Manager ครบชุด
