@@ -60,6 +60,39 @@ class RiskPolicy(BaseModel):
         return cls.model_validate_json(path.read_text())
 
 
+def level_metrics(p: RiskPolicy, entry: Decimal, stop: Decimal, target: Decimal, atr: Decimal, spread: Decimal):
+    """Price, stop, spread and net-RR filters shared by the Paper and alert-only flows.
+
+    Call inside a ``localcontext`` with enough precision. Returns reason codes in their
+    established order and the intermediate values used for reporting.
+    """
+    reasons = []
+    stop_distance = abs(entry - stop)
+    reward_distance = abs(target - entry)
+    stop_atr = stop_distance / atr
+    spread_atr = spread / atr
+    if any(value % p.price_tick != 0 for value in (entry, stop, target)):
+        reasons.append("price_not_on_tick")
+    if not p.min_stop_atr <= stop_atr <= p.max_stop_atr:
+        reasons.append("stop_atr_out_of_range")
+    if spread_atr > p.max_spread_atr:
+        reasons.append("spread_atr_too_high")
+    value_per_unit = p.usd_per_price_unit_per_quantity
+    costs = (spread + 2 * p.slippage_price_per_side) * value_per_unit + p.commission_usd_per_unit_round_trip
+    loss_per_unit = stop_distance * value_per_unit + costs
+    reward_per_unit = reward_distance * value_per_unit - costs
+    net_rr = reward_per_unit / loss_per_unit
+    if net_rr < p.min_net_reward_risk:
+        reasons.append("net_reward_risk_too_low")
+    return reasons, {
+        "stop_distance": stop_distance, "reward_distance": reward_distance,
+        "stop_atr": stop_atr, "spread_atr": spread_atr, "spread_price_used": spread,
+        "gross_reward_risk": reward_distance / stop_distance, "net_reward_risk": net_rr,
+        "cost_usd_per_unit_round_trip": costs, "loss_usd_per_unit": loss_per_unit,
+        "reward_usd_per_unit": reward_per_unit,
+    }
+
+
 class RiskManager:
     def __init__(self, policy: RiskPolicy):
         self.policy = policy
@@ -102,23 +135,10 @@ class RiskManager:
         with localcontext() as ctx:
             ctx.prec = 40
             entry, stop, target, atr = (Decimal(str(value)) for value in (signal.entry, signal.sl, signal.tp, signal.m5.atr))
-            stop_distance = abs(entry - stop)
-            reward_distance = abs(target - entry)
-            stop_atr = stop_distance / atr
-            spread_atr = spread / atr
-            if any(value % p.price_tick != 0 for value in (entry, stop, target)):
-                reasons.append("price_not_on_tick")
-            if not p.min_stop_atr <= stop_atr <= p.max_stop_atr:
-                reasons.append("stop_atr_out_of_range")
-            if spread_atr > p.max_spread_atr:
-                reasons.append("spread_atr_too_high")
+            level_reasons, levels = level_metrics(p, entry, stop, target, atr, spread)
+            reasons.extend(level_reasons)
             value_per_unit = p.usd_per_price_unit_per_quantity
-            costs = (spread + 2 * p.slippage_price_per_side) * value_per_unit + p.commission_usd_per_unit_round_trip
-            loss_per_unit = stop_distance * value_per_unit + costs
-            reward_per_unit = reward_distance * value_per_unit - costs
-            net_rr = reward_per_unit / loss_per_unit
-            if net_rr < p.min_net_reward_risk:
-                reasons.append("net_reward_risk_too_low")
+            loss_per_unit, reward_per_unit = levels["loss_usd_per_unit"], levels["reward_usd_per_unit"]
             budget = p.equity_usd * p.risk_percent / 100
             notional_cap = p.equity_usd * p.max_notional_equity_multiple
             # Risk bypass keeps per-trade risk sizing but drops the notional account cap.
@@ -135,13 +155,7 @@ class RiskManager:
             if planned_loss > budget or (notional > notional_cap and not relaxed):
                 reasons.append("sizing_limit_exceeded")
             values = {
-                "entry": entry, "sl": stop, "tp": target,
-                "stop_distance": stop_distance, "reward_distance": reward_distance,
-                "stop_atr": stop_atr, "spread_atr": spread_atr,
-                "spread_price_used": spread,
-                "gross_reward_risk": reward_distance / stop_distance,
-                "net_reward_risk": net_rr, "cost_usd_per_unit_round_trip": costs,
-                "loss_usd_per_unit": loss_per_unit, "reward_usd_per_unit": reward_per_unit,
+                "entry": entry, "sl": stop, "tp": target, **levels,
                 "risk_budget_usd": budget, "candidate_quantity": quantity,
                 "planned_loss_usd": planned_loss, "planned_reward_usd": quantity * reward_per_unit,
                 "notional_usd": notional, "notional_cap_usd": notional_cap,

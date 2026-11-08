@@ -1,0 +1,22 @@
+{
+  "version": "xm-alert-v1",
+  "mode": "alert_only",
+  "strategy": "rsi2_trend_pullback_r2",
+  "strategy_version": "xm-rsi2-r2-v1",
+  "params": {
+    "rsi_low": 5,
+    "confirm": true,
+    "sl_atr": 1.8,
+    "rr": 2.5,
+    "cost_r_max": 0.08,
+    "blackout_hours": [],
+    "start_hour": 3,
+    "end_hour": 22,
+    "max_spread_atr": 0.2,
+    "exits": {"breakeven_r": null, "breakeven_lock_r": null, "time_stop_bars": 48}
+  },
+  "risk_policy": "config/risk-xm-paper.json",
+  "max_entry_drift_atr": "0.25",
+  "warmup_h1_bars": 400,
+  "warmup_m5_bars": 400
+}

@@ -1,5 +1,7 @@
 # สัญญาณ XM จากราคา MT5
 
+> **โหมดเดิม:** ตั้งแต่ 8 พฤศจิกายน 2026 บริการที่ XM Control เปิดคือโหมดแจ้งเตือนอย่างเดียว ([ALERTS.md](ALERTS.md)) ซึ่งไม่ใช้สัญญาณ `xm-0.2`, AI และบัญชี Paper เนื้อหาด้านล่างใช้กับบริการเดิม `sh scripts/run_xm_paper.sh`
+
 เส้นทางปัจจุบัน: `XM Demo GOLD → EA → market receiver :8001 → Python engine + AI/risk API :8002`
 
 Engine ใช้ชื่อ `XM:XAUUSD`, schema 3 และ strategy `xm-0.2` (ตั้งแต่ 6 พฤศจิกายน 2026; ก่อนหน้านั้นคือ `xm-0.1`) เก็บใน `data/xm-trading.db` ส่วนราคาต้นทางยังอยู่ `data/mt5-market.db` สัญญาณ OANDA และ policy เดิมแยกอยู่เหมือนเดิม

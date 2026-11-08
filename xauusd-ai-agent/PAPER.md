@@ -1,5 +1,7 @@
 # บัญชี Paper Trading ของ XM
 
+> **โหมดเดิม:** ตั้งแต่ 8 พฤศจิกายน 2026 บริการที่ XM Control เปิดคือโหมดแจ้งเตือนอย่างเดียว ([ALERTS.md](ALERTS.md)) ซึ่งไม่ใช้บัญชี Paper และ `XMPaperTicks` เนื้อหาด้านล่างใช้กับบริการเดิม `sh scripts/run_xm_paper.sh`
+
 บัญชีนี้เป็นบัญชีจำลองภายใน Python เริ่มทุน **10,000 USD** แยกจากยอดใน XM Demo ใช้ `simulated_ounce` และมูลค่าราคาเปลี่ยนหนึ่งหน่วย = 1 USD ต่อ quantity หนึ่งหน่วยตาม risk policy เดิม ไม่ใช่ lot หรือ contract specification ของ XM
 
 เส้นทาง: `XMPriceBridge → candidate → LM Studio → Risk Manager → Paper ledger ← XMPaperTicks`

@@ -1,48 +1,56 @@
-# XAUUSD AI Signal Agent · XM Control
+# XAUUSD Signal Desk · XM Control
 
-ระบบรับราคาทองจาก **XM Demo ผ่าน MT5 บน Mac** สร้างสัญญาณจากแท่งปิด M5/H1 วิเคราะห์ด้วย **LM Studio หรือ Codex** แล้วตรวจ Risk ก่อนเปิด–ปิดสถานะใน **Paper Trading ของ Python** ดูแลระบบและรับการแจ้งเตือนผ่านแอป **XM Control**
+ระบบรับราคาทองจาก **XM Demo ผ่าน MT5 บน Mac** แล้ว**แจ้งเตือนจังหวะเข้า trade** ตามกลยุทธ์ **RSI(2) trend pullback** ผ่านแอป **XM Control** และการแจ้งเตือนของ macOS
 
-บัญชี Paper เริ่มต้น 10,000 USD ใช้หน่วย `simulated_ounce` แยกจากยอดบัญชี XM Demo และไม่มีการส่งออร์เดอร์ไปโบรกเกอร์
+ตั้งแต่ 8 พฤศจิกายน 2026 โหมดที่เปิดใช้คือ **แจ้งเตือนอย่างเดียว (`alert_only`)**:
+
+- ไม่เรียก AI (LM Studio/Codex)
+- ไม่ใช้บัญชี Paper
+- ไม่ส่งคำสั่งซื้อขายไป MT5
+- ผู้ใช้ตัดสินใจและส่งคำสั่งเองใน MT5
+
+โค้ดและฐานข้อมูลของโหมด AI/Paper เดิมยังอยู่ แต่บริการไม่ได้เปิดใช้ ([ALERTS.md](ALERTS.md#โหมด-aipaper-เดิม))
 
 ```mermaid
 flowchart LR
-    MT5["XM Demo · MT5"] -->|"XMPriceBridge / XMPaperTicks"| Feed["Receiver · 8001"]
-    Feed -->|"แท่งปิด M5/H1"| Signals["XM Signal Engine"]
-    Signals --> AI["LM Studio หรือ Codex"]
-    AI --> Risk["Risk Manager"]
-    Risk --> Paper["Paper Trading · 8002"]
-    Feed -->|"bid/ask ticks ตามลำดับ"| Paper
-    Paper --> UI["XM Control · แจ้งเตือน Mac"]
+    MT5["XM Demo · MT5"] -->|"XMPriceBridge"| Feed["Receiver · 8001"]
+    Feed -->|"แท่งปิด M5/H1"| Engine["Alert engine · RSI(2) · 8002"]
+    Engine --> Risk["ตัวกรอง Risk"]
+    Risk --> UI["XM Control · แจ้งเตือน Mac"]
 ```
 
 ## เริ่มใช้งานประจำวันบน Mac
 
 สำหรับเครื่องที่ตั้งค่า MT5, EA และ Python ไว้แล้ว:
 
-1. เปิด **MT5** และเชื่อมบัญชี Demo บน `XMGlobal-MT5 7` ตรวจว่ามี EA สองตัวบนคนละกราฟ: `XMPriceBridge` และ `XMPaperTicks` โดยใช้ `GoldSymbol=GOLD`
-2. เตรียม AI ที่จะใช้: เปิด Server/โหลดโมเดลใน **LM Studio** หรือใช้ **Codex CLI** ที่ล็อกอิน ChatGPT แล้ว
-3. เปิด [XM Control.app](<mac/build/XM Control.app>) จาก Finder แล้วกด **เริ่มบริการ** แอปเปิดบริการ Python ที่พอร์ต 8001 และ 8002; หากรันอยู่แล้วจะใช้ตัวเดิม
-4. เลือก **LM Studio / Codex · ChatGPT** ในแถบ **ผู้วิเคราะห์ AI** ตัวเลือกถูกบันทึกข้ามการเริ่มใหม่ งานที่เริ่มแล้วใช้ AI เดิมจนจบ ส่วนงานถัดไปใช้ตัวเลือกใหม่
-5. ตรวจว่า MT5 รับราคาสด, Paper แสดง **ติดตาม Tick สด** และ AI ที่เลือกพร้อมใช้งาน จากนั้นระบบรอสัญญาณที่เข้าเงื่อนไข
+1. เปิด **MT5** และเชื่อมบัญชี Demo บน `XMGlobal-MT5 7` ตรวจว่ามี EA `XMPriceBridge` บนกราฟ (`GoldSymbol=GOLD`) ตั้ง input `HistoryBars=1000` เพื่อให้กลยุทธ์พร้อมแจ้งเตือนทันทีหลังเริ่ม (ดู [ALERTS.md](ALERTS.md#การอุ่นเครื่อง-indicator)) ส่วน `XMPaperTicks` ไม่จำเป็นในโหมดนี้
+2. เปิด [XM Control.app](<mac/build/XM Control.app>) จาก Finder แล้วกด **เริ่มบริการ** แอปเปิดบริการ Python ที่พอร์ต 8001 และ 8002; หากรันอยู่แล้วจะใช้ตัวเดิม
+3. รอให้แถบสถานะขึ้น **พร้อมแจ้งเตือนจังหวะเข้า trade** หมายถึงราคาจาก MT5 สด, engine อุ่นเครื่อง indicator ครบ และ worker ทำงาน
 
 เปิดการแจ้งเตือนจากปุ่มในแอป และอนุญาต **System Settings → Notifications → XM Control** กดทดสอบเพื่อยืนยันการส่งได้
 
-Mac ต้องเปิด MT5 และบริการ Python ต่อเนื่อง ขณะรับการแจ้งเตือนต้องเปิด XM Control ค้างด้วย ปิดหน้าต่างแล้วแอปยังอยู่ในแถบเมนู **◈ XM**; ออกจากแอปจะหยุดการแจ้งเตือน แต่บริการ Python ยังทำงานอยู่ ยังไม่ได้ตั้งให้เปิดอัตโนมัติพร้อมล็อกอิน Mac
+เมื่อมีสัญญาณ แอปแจ้งเตือนข้อมูลต่อไปนี้ ([รายละเอียด](ALERTS.md#อ่านการแจ้งเตือน)):
+
+- ฝั่ง BUY/SELL พร้อมราคาอ้างอิง, SL, TP และ RR สุทธิ
+- เวลาที่ยังเข้าได้ (5 นาทีหลังแท่งปิด) และราคาที่ยังรับได้
+- เวลาที่ควรปิดถ้ายังไม่ถึง SL/TP (4 ชั่วโมง)
+
+Mac ต้องเปิด MT5 และบริการ Python ต่อเนื่อง ขณะรับการแจ้งเตือนต้องเปิด XM Control ค้างไว้ด้วย:
+
+- ปิดหน้าต่างแล้ว แอปยังอยู่ในแถบเมนู **◈ XM**
+- ออกจากแอปจะหยุดการแจ้งเตือน แต่บริการ Python ยังทำงานต่อ
+- ยังไม่ได้ตั้งให้เปิดอัตโนมัติพร้อมล็อกอิน Mac
 
 ### ปุ่มควบคุม
 
 | ปุ่ม | ผล |
 | --- | --- |
-| เริ่มบริการ | เปิด receiver และ XM/AI/Paper ในเครื่อง ไม่เปิด MT5 หรือ LM Studio แทนผู้ใช้ |
-| พักเปิดไม้ใหม่ | ห้ามเปิดสถานะใหม่ แต่ยังรับราคาและติดตาม SL/TP ของสถานะเดิม |
-| เปิดรับไม้ใหม่ | ยกเลิกการพัก โดยยังต้องผ่าน AI, Risk และกฎบัญชี |
-| ยกเว้น AI | สัญญาณใหม่ไม่เรียก AI และไม่ตรวจโครงสร้างตลาด ใช้ฝั่งของสัญญาณโดยตรง |
-| ยกเว้น Risk | ข้ามตัวกรองกลยุทธ์ เพดานขาดทุนรายวัน จำนวนไม้สูงสุด และเพดาน notional ยังคุมความเสี่ยง 0.5% ต่อไม้และตรวจความถูกต้องของข้อมูล |
-| หยุดบริการ | พักการเข้าใหม่ก่อน และหยุดได้เมื่อไม่มีสถานะเปิด; หากยังมีไม้เปิดจะคงบริการติดตามไว้ |
+| เริ่มบริการ | เปิด receiver และบริการแจ้งเตือนในเครื่อง ไม่เปิด MT5 แทนผู้ใช้ |
+| ปิดเสียงแจ้งเตือน | ยังคำนวณและบันทึกสัญญาณต่อ แต่ไม่ส่งการแจ้งเตือน (จดจำค่าข้ามการเริ่มใหม่) |
+| เปิดเสียงแจ้งเตือน | กลับมาแจ้งเตือนสัญญาณใหม่ |
+| หยุดบริการ | หยุด receiver และบริการแจ้งเตือน จะไม่มีการแจ้งเตือนจนกว่าจะเริ่มใหม่ |
 
-ปุ่มยกเว้นทั้งสองปิดไว้เป็นค่าเริ่มต้น ตอนเปิดต้องกดยืนยันสองครั้ง และจดจำค่าข้ามการเริ่มใหม่ ใช้ทดลองใน Paper เท่านั้น รายละเอียดอยู่ใน [RISK.md](RISK.md#โหมดยกเว้น-ai-และ-risk-manager)
-
-หลังหยุดแล้วเริ่มใหม่ สถานะพักยังคงอยู่ ให้กด **เปิดรับไม้ใหม่** เมื่อต้องการรับ entry ต่อ รายละเอียดหน้าจออยู่ใน [MAC-CONTROL.md](MAC-CONTROL.md)
+รายละเอียดหน้าจออยู่ใน [MAC-CONTROL.md](MAC-CONTROL.md)
 
 ## รันผ่าน Terminal
 
@@ -54,29 +62,28 @@ Mac ต้องเปิด MT5 และบริการ Python ต่อเ
 sh scripts/run_mt5_bridge.sh
 ```
 
-**Terminal 2 — สร้างสัญญาณ วิเคราะห์ AI และ Paper Trading**
+**Terminal 2 — กลยุทธ์และการแจ้งเตือน**
 
 ```sh
 sh scripts/run_xm.sh
 ```
 
-ตรวจข้อมูลและบัญชีจากอีก Terminal โดยสคริปต์อ่าน token ภายในเครื่องให้:
+ตรวจสถานะจากอีก Terminal โดยสคริปต์อ่าน token ภายในเครื่องให้:
 
 ```sh
 .venv/bin/python scripts/mt5_status.py GOLD
 .venv/bin/python scripts/xm_status.py
-.venv/bin/python scripts/paper_status.py --watch
 ```
 
-เมื่อเปิดผ่านแอป log อยู่ที่ `.runtime/receiver.log` และ `.runtime/xm.log` หากรันใน Terminal จะเห็นผลในหน้าต่างนั้น รวมเหตุการณ์ `PAPER ...` หลังบันทึกบัญชีสำเร็จ
+เมื่อเปิดผ่านแอป log อยู่ที่ `.runtime/receiver.log` และ `.runtime/xm.log` หากรันใน Terminal จะเห็นสถานะ `ALERT engine status=...` ในหน้าต่างนั้น
 
 | บริการ | ที่อยู่ในเครื่อง | ฐานข้อมูล |
 | --- | --- | --- |
 | MT5 receiver: snapshots และ ticks | `127.0.0.1:8001` | `data/mt5-market.db` |
-| XM signals, AI, Risk, Paper และ Control API | `127.0.0.1:8002` | `data/xm-trading.db` |
+| Alert engine, ตัวกรอง Risk และ Control API | `127.0.0.1:8002` | `data/xm-alerts.db` |
 | TradingView/OANDA webhook ทางเลือก | `127.0.0.1:8000` | `data/trading.db` |
 
-ทุกบริการฟังเฉพาะ loopback และใช้ Uvicorn หนึ่ง worker ตรวจ `/health` ได้โดยไม่ใช้ token แต่ผลนี้ยืนยันตัวบริการ/ฐานข้อมูล/worker เท่านั้น **ไม่ได้ยืนยันว่าราคาใหม่หรือ AI เชื่อมต่อได้** ให้ดูหน้าจอและคำสั่งสถานะประกอบ
+ทุกบริการฟังเฉพาะ loopback และใช้ Uvicorn หนึ่ง worker ตรวจ `/health` ได้โดยไม่ใช้ token แต่ผลนี้ยืนยันแค่ตัวบริการ ฐานข้อมูล และ worker **ไม่ได้ยืนยันว่าได้ราคาใหม่** ให้ดูหน้าจอและคำสั่งสถานะประกอบ
 
 ## ติดตั้งบนเครื่องใหม่
 
@@ -91,13 +98,13 @@ python3.11 -m venv .venv
 
 `init_env.py` สร้าง `.env` พร้อม token แยกสำหรับรับ/อ่านสัญญาณ ส่วน `init_mt5.py` สร้าง `.env.mt5` และ `mt5/bridge-token.txt` ทั้งสองสคริปต์ไม่เขียนทับค่าที่มีอยู่ ไฟล์ลับใช้สิทธิ์ 0600 และถูกละเว้นใน Git ดูตัวแปรตัวอย่างใน [.env.example](.env.example)
 
-จากนั้นตั้งค่า MT5 ตาม [MT5.md](MT5.md) และ tick exporter ตาม [PAPER.md](PAPER.md):
+จากนั้นตั้งค่า MT5 ตาม [MT5.md](MT5.md):
 
-1. ใน MT5 เลือก **File → Open Data Folder** คัดลอก source/binary ของ `XMPriceBridge` และ `XMPaperTicks` ไป `MQL5/Experts/` ถ้าคอมไพล์ใหม่ให้ตรวจว่าไม่มี errors
+1. ใน MT5 เลือก **File → Open Data Folder** คัดลอก source/binary ของ `XMPriceBridge` ไป `MQL5/Experts/` ถ้าคอมไพล์ใหม่ให้ตรวจว่าไม่มี errors (`XMPaperTicks` ใช้เฉพาะโหมด Paper เดิม)
 2. คัดลอก `mt5/bridge-token.txt` ไป `MQL5/Files/`
 3. ที่ **Tools → Options → Expert Advisors** อนุญาต WebRequest ไป `http://127.0.0.1:8001`
-4. แนบ EA ทั้งสองตัวบนคนละกราฟ โดยใช้ server และ symbol ตรงกับบัญชีที่ตั้งค่าไว้ รอประวัติ M5/H1 ครบอย่างละ 300 แท่ง
-5. ตั้งค่า AI แล้วปิดตัวแอปก่อน build:
+4. แนบ `XMPriceBridge` บนกราฟ โดยใช้ server และ symbol ตรงกับบัญชีที่ตั้งค่าไว้ ตั้ง `HistoryBars=1000` แล้วรอประวัติ M5/H1 ครบ
+5. ปิดตัวแอปก่อน build:
 
 ```sh
 sh scripts/build_mac.sh
@@ -107,57 +114,42 @@ sh scripts/build_mac.sh
 
 `requirements-lock.txt` ระบุเวอร์ชันที่ใช้ทดสอบ รวมเครื่องมือทดสอบ ส่วน `requirements.txt` และ `requirements-dev.txt` เป็นขอบเขต dependencies สำหรับการอัปเดต ค่าจาก environment มีลำดับเหนือ `.env` และ path แบบ relative อ้างอิงจากรากโครงการ
 
-## เลือก AI
+## กลยุทธ์และการแจ้งเตือน
 
-| ตัวเลือก | การเชื่อมต่อ | การตั้งค่า |
-| --- | --- | --- |
-| LM Studio | เรียกโมเดลผ่าน Server ที่กำหนด | `LM_STUDIO_URL`, `LM_STUDIO_MODEL`, `AI_REASONING_EFFORT` |
-| Codex · ChatGPT | เรียก Codex CLI ด้วยบัญชี ChatGPT ที่ล็อกอินไว้ ใช้อินเทอร์เน็ตและโควตา Codex | `CODEX_MODEL`, `CODEX_CLI_PATH` เมื่อจำเป็น |
+กลยุทธ์ที่ใช้คือ `rsi2_trend_pullback_r2` ชุด **rr 2.5 ไม่มี breakeven, time stop 48 แท่ง** ซึ่งเป็นชุดที่ walk-forward 3 ปีเลือกบ่อยที่สุด ([ผลวิเคราะห์](tests/rsi2-live-gate-walkforward-2026-11-08.md)) ค่าทั้งหมดอยู่ใน [config/alert-xm.json](config/alert-xm.json)
 
-ค่าที่ทดสอบในโครงการ: LM Studio ใช้ `qwen/qwen3.8-27b` กับ reasoning `none`; Codex ใช้ `gpt-6-astra` กับ reasoning `low` ตัวเลือก Codex ส่งข้อมูลสัญญาณไปประมวลผลผ่าน OpenAI และเป็นงานแยกจากแชตที่ใช้พัฒนาระบบ
-
-`AI_PROVIDER` ตั้งตัวเลือกครั้งแรกได้ (`lm_studio` เป็นค่าเริ่มต้น) หลังเลือกใน UI แล้วจะใช้ค่าที่บันทึกในฐานข้อมูล ไม่มีการสลับผู้ให้บริการอัตโนมัติ ผลแต่ละงานระบุ `provider` และ `model` ที่ใช้จริง
-
-ผลจากทั้งสองตัวต้องเป็น JSON ตาม schema, คง Entry/SL/TP/RR เดิม, ไม่กลับฝั่ง และต้อง WAIT เมื่อหลักฐานยืนยันไม่ครบ จากนั้นตรวจ Risk และอายุสัญญาณอีกครั้งก่อนอนุญาต entry ค่าเริ่มต้น timeout 90 วินาที และอายุสัญญาณ 300 วินาที หากตอบช้าจนหมดอายุจะไม่ยืนยันสัญญาณนั้น
-
-ดู [AI.md](AI.md) สำหรับ LM Studio และ [CODEX.md](CODEX.md) สำหรับการล็อกอิน การแยกโปรเซส และข้อจำกัด Codex
-
-## สัญญาณและบัญชี Paper
-
-XM Signal Engine รุ่น `xm-0.2` ใช้แท่งปิด M5 (EMA20 cross, ADX/DI) ร่วมกับแนวโน้ม H1 ไม่ใช้ RSI กรอง และแนบหลักฐาน pivot/market structure ไว้โดย policy XM ปัจจุบันไม่บังคับโครงสร้าง ไม่สร้าง candidate เมื่อข้อมูลหรือเงื่อนไขไม่ครบ เก็บ checkpoint, สัญญาณ, คิว AI และหลักฐานต้นทางลงฐานข้อมูลเพื่อป้องกันการส่งซ้ำหลังรีสตาร์ต รายละเอียดกฎและเวลา broker อยู่ใน [XM-SIGNALS.md](XM-SIGNALS.md)
-
-บัญชี Paper ใช้ **bid/ask ticks ตามลำดับ** จาก `XMPaperTicks` สำหรับราคาเข้า การประเมินมูลค่า และ SL/TP บันทึก positions, decisions, ledger และ cursor แบบ transaction คำนวณเงินด้วย Decimal
-
-| กฎเริ่มต้น | ค่า |
+| ขั้น | กติกา |
 | --- | --- |
-| ทุนตั้งต้น | 10,000 USD |
-| สถานะเปิดสูงสุด | 1 |
-| ความเสี่ยงต่อไม้/รวมสถานะเปิด | ไม่เกิน 0.5% ตามกฎบัญชี |
-| เพดานขาดทุนรายวัน | 2% รวม unrealized P/L และค่าธรรมเนียม |
-| อายุ quote สำหรับเปิดไม้ใหม่ | ไม่เกิน 30 วินาที และ tick stream ต้องตามทัน |
+| แนวโน้ม H1 | BUY เมื่อราคาปิด H1 > EMA200 และ EMA50 > EMA200 · SELL กลับด้าน |
+| ยืนยันบน M5 | BUY เมื่อราคาปิด M5 > EMA200 · SELL เมื่อต่ำกว่า |
+| จังหวะเข้า | RSI(2) แท่งก่อน ≤ 5 แล้วแท่งนี้ปิดเหนือ high แท่งก่อน (SELL: ≥ 95 แล้วปิดใต้ low) |
+| SL / TP | SL ห่าง 1.8 × ATR14 · TP ตั้งให้ RR สุทธิหลังหักต้นทุนเท่ากับ 2.5 |
+| ออกตามเวลา | ถ้าไม่ถึง SL/TP ภายใน 48 แท่ง M5 (4 ชั่วโมง) |
+| เวลาเข้า | 03:00–22:00 เวลา server ไม่เข้าวันศุกร์หลัง 20:00 |
+| ตัวกรองต้นทุน | ข้ามสัญญาณที่ต้นทุนเกิน 8% ของระยะ SL (ทำงานเหมือนตัวกรองความผันผวน) |
 
-Paper รวม spread ผ่าน bid/ask, slippage และ commission ตาม policy จำลอง ยังไม่จำลอง lot/contract specification จริง, margin, swap/financing หรือ partial fill รายละเอียดอยู่ใน [PAPER.md](PAPER.md) และ [RISK.md](RISK.md)
+หลังจากนั้นตรวจด้วยตัวกรอง Risk จาก [config/risk-xm-paper.json](config/risk-xm-paper.json) ชุดเดียวกับที่ใช้ใน backtest ได้แก่:
 
-## API สำหรับระบบ XM
+- RR สุทธิ ≥ 1.2
+- ระยะ SL 1–3 ATR
+- spread/ATR ≤ 0.20 โดยคิด spread อย่างน้อย 0.60
+- อายุสัญญาณ ≤ 300 วินาที และต้องมาจาก server/symbol ที่ pin ไว้
+
+สัญญาณที่ผ่านจะถูกบันทึกและแจ้งเตือน หลังสัญญาณหนึ่งจะไม่แจ้งสัญญาณใหม่จนกว่าไม้ตามกลยุทธ์ (สมมติว่าเข้าตามสัญญาณ) จะถึง SL, TP หรือครบเวลา เหมือนกฎหนึ่งไม้ต่อครั้งใน backtest
+
+ผล backtest ไม่ใช่หลักฐานว่าจะทำกำไรได้จริง กำไรของกลยุทธ์นี้ในการทดสอบมาจากปีที่ใช้ออกแบบเป็นส่วนใหญ่ รายละเอียดการทำงาน การอุ่นเครื่อง และข้อจำกัดอยู่ใน [ALERTS.md](ALERTS.md)
+
+## API สำหรับระบบแจ้งเตือน
 
 บนพอร์ต **8002** ใช้ Bearer `API_TOKEN` สำหรับทุก endpoint ด้านล่าง ยกเว้น `/health`:
 
 | Method / Path | หน้าที่ |
 | --- | --- |
-| GET `/health` | ตรวจบริการ/ฐานข้อมูล/AI worker |
-| GET `/xm/status` | สถานะ signal engine และ Paper worker |
-| GET `/dashboard/state` | สถานะรวม ตัวเลือก AI บัญชี และเหตุการณ์ |
-| POST `/dashboard/ai-provider` | เลือก AI ด้วย `{"provider":"lm_studio"}` หรือ `{"provider":"codex"}` |
-| POST `/dashboard/bypass` | เปิด/ปิดโหมดยกเว้นด้วย `{"ai":true}`, `{"risk":false}` หรือทั้งสองค่า |
-| POST `/dashboard/pause` | พัก/รับ entry ด้วย `{"paused":true}` หรือ `{"paused":false}` |
-| GET `/signals` และ `/signals/<id>` | อ่านสัญญาณที่บันทึก |
-| GET `/signals/<id>/analysis` | ผล AI, ผู้วิเคราะห์, Risk status และ `effective_decision` |
-| GET `/signals/<id>/risk` | รายงาน Risk, การคำนวณ และ policy snapshot |
-| GET `/paper/account` | Balance, Equity, P/L, สถานะราคา และกฎบัญชี |
-| GET `/paper/positions?status=open` หรือ `closed` | สถานะเปิดหรือประวัติที่ปิดแล้ว |
-| GET `/paper/ledger` และ `/paper/decisions` | รายการบัญชีและผลพิจารณา entry |
-
-Lists ของสัญญาณและบัญชีใช้ pagination ตาม id และจำกัดสูงสุด 100 รายการต่อคำขอ อ่านผลยืนยันจาก `effective_decision` เพราะคำตอบ BUY/SELL ของ AI เพียงอย่างเดียวยังไม่ยืนยันว่าเปิดสถานะได้
+| GET `/health` | ตรวจบริการ/ฐานข้อมูล/engine worker |
+| GET `/xm/status` | สถานะ alert engine, การอุ่นเครื่อง, indicator และไม้ตามกลยุทธ์ |
+| GET `/alerts?after_id=0&limit=50` | สัญญาณที่บันทึก (`alert`, `missed`, `warmup`, `rejected`) พร้อมหลักฐาน |
+| GET `/dashboard/state` | สถานะรวมสำหรับแอป: ราคา, engine, สัญญาณ, เหตุการณ์ และกติกา |
+| POST `/dashboard/pause` | ปิด/เปิดเสียงแจ้งเตือนด้วย `{"paused":true}` หรือ `{"paused":false}` |
 
 บนพอร์ต **8001** ใช้ Bearer `MT5_BRIDGE_TOKEN` จาก `.env.mt5`: `POST /mt5/snapshot`, `POST /mt5/ticks`, `GET /mt5/latest?symbol=GOLD`, `GET /mt5/ticks/cursor?symbol=GOLD` และ `GET /mt5/status` ส่วน `/health` ไม่ต้องใช้ token งบรับ snapshot คือ 20 คำขอ/นาที และ Tick 64 คำขอ/นาที แยกจากกัน
 
@@ -166,12 +158,13 @@ Lists ของสัญญาณและบัญชีใช้ pagination �
 | ตำแหน่ง | เนื้อหา |
 | --- | --- |
 | `data/mt5-market.db` | Market snapshots, ordered ticks และ coverage/cursor |
-| `data/xm-trading.db` | XM signals, ผล AI/Risk, บัญชี Paper, ตัวเลือก AI และเหตุการณ์ UI |
+| `data/xm-alerts.db` | Checkpoint ของกลยุทธ์, สัญญาณแจ้งเตือน, ประวัติการเริ่มคำนวณใหม่ และเหตุการณ์ UI |
+| `data/xm-trading.db` | ข้อมูลโหมด AI/Paper เดิม (สัญญาณ, ผล AI/Risk, บัญชี Paper) ไม่ถูกเขียนในโหมดแจ้งเตือน |
 | `data/trading.db` | สัญญาณจากเส้นทาง TradingView/OANDA ทางเลือก |
 | `.runtime/` | Log ของบริการที่เริ่มผ่านแอป, รายงานตรวจ และฐานข้อมูลสำรองที่ทำไว้ |
-| `config/` | Risk policy และกฎบัญชี Paper |
+| `config/` | Policy แจ้งเตือน (`alert-xm.json`), ตัวกรอง Risk และกฎบัญชี Paper เดิม |
 
-`.env`, `.env.mt5`, ไฟล์ token, ฐานข้อมูล และ `.runtime/` ถูกละเว้นใน Git อย่าใส่ token ใน source, URL ที่แชร์, ภาพหน้าจอ หรือ log แอป Mac เก็บ bearer token ในฝั่ง native; หน้า UI ไม่มี token และโปรเซส Codex ไม่ได้รับ trading tokens หรือ Platform API keys
+`.env`, `.env.mt5`, ไฟล์ token, ฐานข้อมูล และ `.runtime/` ถูกละเว้นใน Git อย่าใส่ token ใน source, URL ที่แชร์, ภาพหน้าจอ หรือ log แอป Mac เก็บ bearer token ในฝั่ง native; หน้า UI ไม่มี token
 
 สำรอง SQLite ด้วย backup API ขณะบริการทำงาน หรือหยุดบริการอย่างถูกต้องก่อนสำรอง เก็บฐานข้อมูลเดิมก่อนแก้ policy หรือสอบสวนปัญหาประวัติราคา
 
@@ -180,15 +173,13 @@ Lists ของสัญญาณและบัญชีใช้ pagination �
 | อาการ | ตรวจและดำเนินการ |
 | --- | --- |
 | ไม่พบข้อมูล MT5 | ตรวจ XM connection, server/symbol, EA, token ใน `MQL5/Files` และ WebRequest allowlist |
-| กำลังรับ Tick ย้อนหลัง | EA ยังส่งข้อมูลค้างอยู่ เปิด Mac/MT5 ต่อจนตามทัน; v1.02 ส่งได้สูงสุด 8 หน้า/รอบ โดยไม่ข้ามประวัติ |
-| ไม่มี Tick สด / `feed_stale` | ดู `XMPaperTicks` และ Experts log; snapshot จาก XMPriceBridge ที่สดไม่ได้แปลว่า tick stream สดด้วย |
-| `tick_history_gap_review_required` หรือ engine ขอ reset | ตรวจประวัติ/coverage และ checkpoint ก่อนดำเนินการ ไม่ล้างฐานข้อมูลเพื่อข้ามข้อผิดพลาด |
-| LM Studio ยังไม่พร้อม | ตรวจ URL, Server และโมเดลที่โหลด หรือเลือก Codex จากแอป |
-| Codex ยังไม่พร้อม/ถึงโควตา | ตรวจ `codex login status`, โมเดลและโควตาบัญชี หรือเลือก LM Studio |
-| ยังไม่เปิดไม้ทั้งที่มีผล AI | ตรวจ `effective_decision`, อายุสัญญาณ, ความสด Tick, สถานะพัก, policy และเพดานรายวัน |
-| ไม่เห็นแจ้งเตือน Mac | ตรวจ Allow Notifications, Focus และให้แอปยังเปิดอยู่ |
+| `feed_stale` / ราคาไม่อัปเดต | ดู `XMPriceBridge` ใน Experts log และ `scripts/mt5_status.py GOLD` |
+| กำลังอุ่นเครื่อง indicator นาน | EA ส่งประวัติน้อยเกินไป ตั้ง `HistoryBars=1000` ใน input ของ `XMPriceBridge` (ไม่ต้องคอมไพล์ใหม่) |
+| เหตุการณ์ "เริ่มคำนวณกลยุทธ์ใหม่" | ข้อมูลขาดช่วงระหว่างที่บริการหยุด, แท่งที่ปิดแล้วถูกแก้ หรือแก้ policy; checkpoint เดิมเก็บไว้ใน `alert_engine_resets` แล้วต้องอุ่นเครื่องใหม่ |
+| สัญญาณขึ้น "ไม่ผ่าน Risk" | ดูเหตุผลในประวัติสัญญาณ เช่น spread สูงเทียบ ATR หรือ RR สุทธิต่ำ |
+| ไม่เห็นแจ้งเตือน Mac | ตรวจ Allow Notifications, Focus, ปุ่มปิดเสียง และให้แอปยังเปิดอยู่ |
 
-หลังเปลี่ยนไฟล์ EA ให้นำตัวเดิมออกจากกราฟ → Navigator → Refresh → แนบใหม่ เพื่อโหลดโค้ดใหม่ ผลวิเคราะห์ล่าสุดในแอปเป็นประวัติของงานนั้น ให้ดูชื่อ AI/วันที่ควบคู่กับการ์ดสถานะปัจจุบัน
+หลังเปลี่ยนไฟล์ EA ให้นำตัวเดิมออกจากกราฟ → Navigator → Refresh → แนบใหม่ เพื่อโหลดโค้ดใหม่
 
 ## การทดสอบและผลตรวจล่าสุด
 
@@ -236,7 +227,13 @@ Lists ของสัญญาณและบัญชีใช้ pagination �
 
 ผล backtest เป็นการจำลองจากข้อมูลย้อนหลัง ไม่ใช่หลักฐานว่าระบบจริงจะทำกำไรได้ ผลจากข้อมูลสังเคราะห์ใช้ตรวจว่าโค้ดทำงานถูกต้องเท่านั้น
 
-ผลตรวจที่บันทึกถึง **4 พฤศจิกายน 2026**:
+ผลตรวจโหมดแจ้งเตือน **8 พฤศจิกายน 2026** ([รายงาน](tests/alert-mode-2026-11-08.md)):
+
+- ชุดทดสอบ Python: **272 passed**
+- สัญญาณจาก alert engine ตรงกับไม้ของ backtest (`--live-risk-gate`) **191/191** บนข้อมูล XM M1 3 ปี: `.venv/bin/python scripts/check_alert_parity.py`
+- ยังไม่ได้ตรวจกับราคาสดจาก MT5 เพราะ ณ วันที่ตรวจ EA ไม่ได้ส่งข้อมูล
+
+ผลตรวจโหมด AI/Paper เดิม ที่บันทึกถึง **4 พฤศจิกายน 2026**:
 
 - ชุดทดสอบ Python: **231 passed**, 1 Starlette/httpx deprecation warning
 - LM Studio จริง: **10.8 วินาที**, AI=WAIT, risk=passed บนข้อมูล XM สมมติ [ผลตรวจ](tests/lmstudio-xm-live-2026-11-03.json)
@@ -264,10 +261,11 @@ sh scripts/run_local.sh
 
 | คู่มือ | เนื้อหา |
 | --- | --- |
+| [ALERTS.md](ALERTS.md) | โหมดแจ้งเตือน: กลยุทธ์, การอุ่นเครื่อง, ความตรงกับ backtest และข้อจำกัด |
 | [MAC-CONTROL.md](MAC-CONTROL.md) | หน้าจอ ปุ่มควบคุม การแจ้งเตือน และ build แอป Mac |
 | [MT5.md](MT5.md) | ติดตั้ง XMPriceBridge, WebRequest และตรวจ snapshots |
-| [XM-SIGNALS.md](XM-SIGNALS.md) | กฎสัญญาณ XM, checkpoint, หลักฐานต้นทาง และเวลา broker |
-| [AI.md](AI.md) | การตั้งค่าและตรวจ LM Studio |
-| [CODEX.md](CODEX.md) | การเลือก Codex, auth, โควตา และการทดสอบ |
+| [XM-SIGNALS.md](XM-SIGNALS.md) | กฎสัญญาณ `xm-0.2` ของโหมด AI/Paper เดิม, checkpoint และเวลา broker |
+| [AI.md](AI.md) | การตั้งค่าและตรวจ LM Studio (โหมดเดิม) |
+| [CODEX.md](CODEX.md) | การเลือก Codex, auth, โควตา และการทดสอบ (โหมดเดิม) |
 | [RISK.md](RISK.md) | Risk Manager ต่อสัญญาณ |
-| [PAPER.md](PAPER.md) | XMPaperTicks, ledger, P/L, SL/TP และกฎระดับบัญชี |
+| [PAPER.md](PAPER.md) | XMPaperTicks, ledger, P/L, SL/TP และกฎระดับบัญชี (โหมดเดิม) |
