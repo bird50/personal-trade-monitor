@@ -106,7 +106,12 @@ def test_entry_thresholds(side, rsi, adx, expected):
                "cross_up": buy, "cross_down": not buy,
                "plus_di": 30 if buy else 10, "minus_di": 10 if buy else 30}
     h1 = {"close": 103 if buy else 97, "ema_fast": 102 if buy else 98, "ema_slow": 100}
-    assert choose_side(metrics, h1) == expected
+    # xm-0.1 RSI band, kept for backtest parity.
+    assert choose_side(metrics, h1, rsi_band=True) == expected
+    # xm-0.2 ignores RSI entirely (even a missing value); ADX, DI, EMA cross and H1 trend remain.
+    assert choose_side(metrics, h1) == (None if adx < 20 else side)
+    assert choose_side(metrics | {"rsi": None}, h1) == (None if adx < 20 else side)
+    assert choose_side(metrics | {"plus_di": metrics["minus_di"], "minus_di": metrics["plus_di"]}, h1) is None
 
 
 def test_pivot_waits_for_right_bars_and_never_reactivates():
@@ -454,3 +459,52 @@ def test_xm_service_reads_local_feed_and_protects_status(tmp_path,sample,monkeyp
     with pytest.raises(ValueError,match='policy source'):
         with TestClient(create_xm_app(config,replace(bridge,server='OTHER'))):
             pass
+
+
+def test_xm01_checkpoint_upgrades_in_place_and_unknown_version_still_blocks(db, sample):
+    engine = XMEngine(db); engine.process(sample, sample.captured_at_utc_s)
+    with db.connect() as conn:
+        state = json.loads(conn.execute("SELECT state_json FROM xm_engine").fetchone()[0])
+        before = {k: v for k, v in state.items() if k != "version"}
+        conn.execute("UPDATE xm_engine SET state_json=?", (json.dumps(state | {"version": "xm-0.1"}),))
+    later = advance(sample)
+    result = engine.process(later, later.captured_at_utc_s)
+    assert result["status"] == "evaluated" and result["engine_version"] == "xm-0.2"
+    upgraded = raw_state(db)
+    assert upgraded["version"] == "xm-0.2" and upgraded["upgraded_from"] == "xm-0.1"
+    assert upgraded["index"] == before["index"] + 1  # indicator state continued, not rebuilt
+    with db.connect() as conn:
+        conn.execute("UPDATE xm_engine SET state_json=?", (json.dumps(upgraded | {"version": "xm-0.0"}),))
+    blocked = engine.process(advance(later), advance(later).captured_at_utc_s)
+    assert blocked["status"] == "version_or_offset_changed_reset_required"
+
+
+def test_xm02_signal_versions_must_agree(payload):
+    data = complete_xm(payload)
+    data.update(strategy_version="xm-0.2", signal_id=data["signal_id"].replace(":xm-0.1", ":xm-0.2"))
+    data["source"]["engine_version"] = "xm-0.2"
+    assert Signal.model_validate(data).strategy_version == "xm-0.2"
+    with pytest.raises(ValidationError):
+        Signal.model_validate(data | {"source": data["source"] | {"engine_version": "xm-0.1"}})
+    with pytest.raises(ValidationError):
+        Signal.model_validate(data | {"signal_id": data["signal_id"].replace(":xm-0.2", ":xm-0.1")})
+
+
+def test_xm_policy_rr_and_structure_rules(payload):
+    raw = json.loads((ROOT / "config/risk-xm-paper.json").read_text())
+    assert raw["min_net_reward_risk"] == "1.2" and raw["require_market_structure"] is False
+    data = complete_xm(payload)
+    result = {k: data[k] for k in ("entry", "sl", "tp", "risk_reward")} | {"decision": "BUY"}
+    now = data["source"]["snapshot_utc_s"]
+    # Break the pivot evidence: blocked only when the policy requires structure.
+    data["context"]["market_structure"]["recent_low"]["active"] = False
+    signal = Signal.model_validate(data)
+    strict = RiskManager(RiskPolicy.model_validate({k: v for k, v in raw.items() if k != "require_market_structure"}))
+    assert "broken_pivot_level" in strict.evaluate(signal, result, now=now)["reason_codes"]
+    relaxed = RiskManager(RiskPolicy.model_validate(raw)).evaluate(signal, result, now=now)
+    assert relaxed["status"] == "passed" and relaxed["waived_reason_codes"] == []
+    assert relaxed["policy"]["require_market_structure"] is False
+    # Net RR is now accepted from 1.2 instead of 1.5.
+    assert RiskPolicy.model_validate(raw).min_net_reward_risk == Decimal("1.2")
+    with pytest.raises(ValidationError):
+        RiskPolicy.model_validate(raw | {"require_market_structure": "no"})

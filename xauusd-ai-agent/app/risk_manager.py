@@ -42,6 +42,8 @@ class RiskPolicy(BaseModel):
     price_tick: Positive
     max_signal_age_seconds: Annotated[int, Field(gt=0, le=3600, strict=True)]
     max_future_seconds: Annotated[int, Field(ge=0, le=60, strict=True)]
+    # None (omitted) keeps the original behaviour and policy hash: pivot structure is required.
+    require_market_structure: Annotated[bool, Field(strict=True)] | None = None
 
     @model_validator(mode="after")
     def ordered_limits(self):
@@ -69,7 +71,7 @@ class RiskManager:
         p = self.policy
         bypass = {"ai": bool((bypass or {}).get("ai")), "risk": bool((bypass or {}).get("risk"))}
         relaxed = bypass["risk"]
-        reasons = confirmation_blockers(signal)
+        reasons = confirmation_blockers(signal) if p.require_market_structure is not False else []
         spread = p.spread_price
         expires_at = signal.bar_close_ms / 1000 + p.max_signal_age_seconds
         if signal.source is not None:

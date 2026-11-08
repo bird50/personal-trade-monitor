@@ -4,6 +4,21 @@
 
 ใช้นโยบาย `config/risk-paper.json` ผ่าน `RISK_POLICY_PATH` โหลดเมื่อเริ่มแอป หากไฟล์หายหรือกฎไม่ถูกต้อง แอปจะไม่เริ่มทำงาน ไม่มีโหมดข้าม Risk Manager เพื่อยืนยันสัญญาณ
 
+## นโยบาย XM ปัจจุบัน (`config/risk-xm-paper.json`)
+
+บริการ XM (:8002) ใช้ไฟล์นี้แทน `config/risk-paper.json` ค่าที่ต่างจากตารางด้านล่าง (ตั้งแต่ 6 พฤศจิกายน 2026):
+
+| กฎ | ค่า XM |
+| --- | --- |
+| Symbol / ต้นทาง | `XM:XAUUSD` จาก `XMGlobal-MT5 7` / `GOLD` |
+| Net Reward/Risk หลังต้นทุน | อย่างน้อย **1.2** (เดิม 1.5) ตรวจทั้งตอนประเมินและตอน fill |
+| โครงสร้างตลาด (`confirmation_blockers`) | **ไม่บังคับ** — `"require_market_structure": false` |
+| Spread จำลองขั้นต่ำ / tick ราคา | 0.60 / 0.01 |
+
+`require_market_structure` เป็นค่าเลือกได้: ถ้าไม่ใส่ (ค่าเดิมของทุก policy) Risk ยังตรวจ structural blockers เหมือนเดิมและ hash ของ policy เดิมไม่เปลี่ยน ใส่ `false` แล้วข้ามเฉพาะ blocker ของ pivot ส่วนกฎอื่นทั้งหมดยังเหมือนเดิม ถ้าเปิด AI ใช้อีกครั้ง AI ยังต้อง WAIT เมื่อมี blocker ตามกฎใน [AI.md](AI.md) ปัจจุบันบัญชี Paper ใช้ **ยกเว้น AI** (ดูหัวข้อด้านล่าง) จึงไม่เรียกโมเดล
+
+การแก้ไฟล์นี้ทำให้ policy hash ของบัญชี Paper ไม่ตรง ต้องรีสตาร์ตบริการแล้วรับ policy ใหม่ด้วย `scripts/adopt_paper_policy.py` ตาม [PAPER.md](PAPER.md)
+
 ## กฎเริ่มต้น
 
 | กฎ | ค่า |

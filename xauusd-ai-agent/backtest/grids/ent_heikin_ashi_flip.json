@@ -1,0 +1,2 @@
+{"base": {"gap_atr": 5, "min_atr": 3.0},
+ "axes": {"er_min": [0.30, 0.20], "rr": [2.0, 1.5, 2.5], "exits": [{"label": "none", "value": {}}, {"label": "be1.0", "value": {"breakeven_r": 1.0, "breakeven_lock_r": 0.1}}]}}

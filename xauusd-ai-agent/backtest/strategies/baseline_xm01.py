@@ -1,4 +1,7 @@
-"""Port of the live ``xm-0.1`` candidate rules (``app/xm_engine.py``) for parity backtests.
+"""Port of the live XM candidate rules (``app/xm_engine.py``) for parity backtests.
+
+Defaults reproduce ``xm-0.1`` (RSI band + structure filter). ``{"rsi_band": false,
+"structure_filter": false}`` reproduces ``xm-0.2`` with ``require_market_structure: false``.
 
 Same causal order as ``XMEngine.process``: admit H1 bars closed at/before the M5 *open*
 (Pine ``[1]``), update M5 indicators and pivots, clear the virtual candidate lock when the
@@ -19,7 +22,7 @@ from .base import Strategy
 
 class BaselineXM01(Strategy):
     name = "baseline_xm01"
-    default_params = {"structure_filter": True, "exits": {}}
+    default_params = {"structure_filter": True, "rsi_band": True, "exits": {}}
 
     def __init__(self, params=None):
         super().__init__(params)
@@ -51,7 +54,7 @@ class BaselineXM01(Strategy):
         if lock and (bar["high"] >= lock["tp"] if lock["side"] == "BUY" else bar["low"] <= lock["tp"]):
             st["candidate_lock"] = None
         h1_fresh = st["h1"] is not None and 0 <= bar["open_server_s"] - st["h1"]["bar_close_ms"] / 1000 < 3600
-        side = choose_side(metrics, st["h1"]) if h1_fresh else None
+        side = choose_side(metrics, st["h1"], rsi_band=self.params["rsi_band"]) if h1_fresh else None
         prior = st["recent_range"]
         candidate = side if st["candidate_lock"] is None and len(prior) == 20 else None
         result = None
@@ -66,7 +69,8 @@ class BaselineXM01(Strategy):
             self.candidates.append({"open_server_s": bar["open_server_s"], "side": candidate,
                                     "entry": entry, "sl": sl, "tp": tp, "blockers": blockers})
             if not blockers:
-                result = self.signal(candidate, sl, tp, atr=metrics["atr"], tag="xm-0.1")
+                tag = "xm-0.1" if self.params["rsi_band"] and self.params["structure_filter"] else "xm-0.2"
+                result = self.signal(candidate, sl, tp, atr=metrics["atr"], tag=tag)
         prior.append(bar)
         del prior[:-20]
         return result

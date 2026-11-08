@@ -1,0 +1,30 @@
+{
+  "base": {
+    "os_level": 20,
+    "min_atr": 3.0
+  },
+  "axes": {
+    "adx_min": [
+      25,
+      30
+    ],
+    "rr": [
+      2.0,
+      1.5,
+      2.5
+    ],
+    "exits": [
+      {
+        "label": "none",
+        "value": {}
+      },
+      {
+        "label": "be1.0",
+        "value": {
+          "breakeven_r": 1.0,
+          "breakeven_lock_r": 0.1
+        }
+      }
+    ]
+  }
+}

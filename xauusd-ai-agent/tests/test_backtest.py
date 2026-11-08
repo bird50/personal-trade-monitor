@@ -253,7 +253,8 @@ def snapshot(m5, h1, j, offset=7200):
 def test_baseline_candidates_match_xm_engine(tmp_path):
     bars = parity_bars()
     m5, h1 = resample(bars, 300), resample(bars, 3600)
-    strategy = BaselineXM01()
+    # The live engine is xm-0.2 (no RSI band); the default baseline reproduces xm-0.1.
+    strategy = BaselineXM01({"rsi_band": False})
     Backtest(History(bars), strategy, POLICY, PAPER).run()
     db = Database(tmp_path / "xm.db")
     db.initialize()

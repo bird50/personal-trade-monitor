@@ -77,6 +77,31 @@ class PaperEngine:
                              (initial,initial,int(now*1000)))
             conn.execute("INSERT OR IGNORE INTO paper_runtime VALUES(1,?)",(json.dumps({'last_seq':0,'status':'waiting_for_tick_stream','last_tick_utc_ms':None,'equity_peak':initial,'max_drawdown_percent':'0'}),))
 
+    def adopt_policy(self,reason,now=None):
+        """Operator action: pin the currently loaded Paper+Risk policy to the existing account.
+
+        Balance, ledger, positions and tick cursor are untouched; the previous policy is kept in
+        ``paper_policy_history``. Refused while a position is open so it never changes under a trade.
+        """
+        now=time.time() if now is None else now
+        reason=str(reason).strip()
+        if not 1<=len(reason)<=500:
+            raise ValueError('A reason of 1-500 characters is required')
+        with self.db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("""CREATE TABLE IF NOT EXISTS paper_policy_history (
+                id INTEGER PRIMARY KEY,adopted_at REAL NOT NULL,reason TEXT NOT NULL,
+                previous_hash TEXT NOT NULL,previous_json TEXT NOT NULL,new_hash TEXT NOT NULL,new_json TEXT NOT NULL)""")
+            account=self._account(conn)
+            if account['policy_hash']==self.policy_hash:
+                return {'changed':False,'policy_hash':self.policy_hash}
+            if self._open(conn):
+                raise ValueError('Close open positions before adopting a new policy')
+            conn.execute("INSERT INTO paper_policy_history(adopted_at,reason,previous_hash,previous_json,new_hash,new_json) VALUES(?,?,?,?,?,?)",
+                         (now,reason,account['policy_hash'],account['policy_json'],self.policy_hash,self.policy_json))
+            conn.execute('UPDATE paper_account SET policy_hash=?,policy_json=? WHERE id=1',(self.policy_hash,self.policy_json))
+        return {'changed':True,'previous_hash':account['policy_hash'],'policy_hash':self.policy_hash}
+
     def _account(self,conn):
         return conn.execute('SELECT * FROM paper_account WHERE id=1').fetchone()
 

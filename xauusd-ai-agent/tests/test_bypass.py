@@ -13,12 +13,24 @@ from app.config import ROOT, Settings
 from app.control_center import BypassRequest, install_control_routes
 from app.models import Signal
 from app.paper_trading import D
+from app.risk_manager import RiskPolicy
 from app.worker import AnalysisWorker
 from test_control_center import center
 from test_paper_trading import rig, step
 from test_receiver import payload
 from test_xm_engine import complete_xm
 
+
+@pytest.fixture(autouse=True)
+def structure_required_policy(monkeypatch):
+    """Waivers concern pivot-structure blockers, so pin the policy variant that still requires them.
+
+    The operational XM policy sets ``require_market_structure: false`` (xm-0.2); autouse runs
+    before the ``rig`` fixture loads it.
+    """
+    original = RiskPolicy.load.__func__
+    monkeypatch.setattr(RiskPolicy, 'load', classmethod(
+        lambda cls, path: original(cls, path).model_copy(update={'require_market_structure': None})))
 
 def config(rig):
     return Settings(webhook_token='w'*43, api_token='r'*43, database_path=rig['db'].path, ai_enabled=True,

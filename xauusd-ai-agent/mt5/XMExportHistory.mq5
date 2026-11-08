@@ -5,7 +5,7 @@
 
 input string ExpectedServer = "XMGlobal-MT5 7";
 input string GoldSymbol = "GOLD";
-input int MonthsBack = 12;
+input int MonthsBack = 36;
 
 string I(long value) { return StringFormat("%I64d", value); }
 

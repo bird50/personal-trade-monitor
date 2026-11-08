@@ -124,7 +124,7 @@ sh scripts/build_mac.sh
 
 ## สัญญาณและบัญชี Paper
 
-XM Signal Engine รุ่น `xm-0.1` ใช้แท่งปิด M5 ร่วมกับแนวโน้ม H1 และหลักฐาน pivot/market structure ไม่สร้าง candidate เมื่อข้อมูลหรือเงื่อนไขไม่ครบ เก็บ checkpoint, สัญญาณ, คิว AI และหลักฐานต้นทางลงฐานข้อมูลเพื่อป้องกันการส่งซ้ำหลังรีสตาร์ต รายละเอียดกฎและเวลา broker อยู่ใน [XM-SIGNALS.md](XM-SIGNALS.md)
+XM Signal Engine รุ่น `xm-0.2` ใช้แท่งปิด M5 (EMA20 cross, ADX/DI) ร่วมกับแนวโน้ม H1 ไม่ใช้ RSI กรอง และแนบหลักฐาน pivot/market structure ไว้โดย policy XM ปัจจุบันไม่บังคับโครงสร้าง ไม่สร้าง candidate เมื่อข้อมูลหรือเงื่อนไขไม่ครบ เก็บ checkpoint, สัญญาณ, คิว AI และหลักฐานต้นทางลงฐานข้อมูลเพื่อป้องกันการส่งซ้ำหลังรีสตาร์ต รายละเอียดกฎและเวลา broker อยู่ใน [XM-SIGNALS.md](XM-SIGNALS.md)
 
 บัญชี Paper ใช้ **bid/ask ticks ตามลำดับ** จาก `XMPaperTicks` สำหรับราคาเข้า การประเมินมูลค่า และ SL/TP บันทึก positions, decisions, ledger และ cursor แบบ transaction คำนวณเงินด้วย Decimal
 
@@ -211,6 +211,8 @@ Lists ของสัญญาณและบัญชีใช้ pagination �
 
 `backtest/` ทดสอบกลยุทธ์จากไฟล์ M1 ของโบรกเกอร์ (`data/history/xm_gold_m1.csv` จาก `mt5/XMExportHistory.mq5`) โดยไม่แตะ service, ฐานข้อมูล หรือบัญชี Paper ผลเขียนที่ `.runtime/backtest/<run>/summary.json` และ `trades.json`
 
+สคริปต์ export ดึงย้อนหลัง `MonthsBack` เดือน (ค่าเริ่มต้น 36, สูงสุด 36) ข้อมูล M1 3 ปีมีประมาณ 1.06 ล้านแท่ง จึงต้องตั้ง MT5 **Tools → Options → Charts → Max bars in chart** ให้มากพอ (เช่น Unlimited) แล้วเปิด MT5 ใหม่ก่อน export ไฟล์ 3 ปีที่ใช้ทดสอบเก็บไว้เป็น `data/history/xm_gold_m1_36m.csv` และส่งเข้าเครื่องมือด้วย `--data`
+
 ```sh
 .venv/bin/python scripts/run_backtest.py --strategy baseline_xm01
 .venv/bin/python scripts/run_backtest.py --strategy baseline_xm01 --params '{"structure_filter": false, "exits": {"breakeven_r": 1}}'
@@ -225,6 +227,12 @@ Lists ของสัญญาณและบัญชีใช้ pagination �
 - `--live-risk-gate` จะตัดสัญญาณที่ Risk/Paper จริงจะปฏิเสธ (เช่น net RR < `min_net_reward_risk`) ถ้าไม่ใส่ ผลจะนับไว้ใน `trades_failing_live_risk`
 - กลยุทธ์ใหม่ให้เขียนเป็นไฟล์ละหนึ่งกลยุทธ์ใน `backtest/strategies/<name>.py` โดยสืบทอด `Strategy` ใน `backtest/strategies/base.py` แล้ว return `{side, sl, tp}` หรือ `None` จาก `on_bar(ctx)` ส่วน indicator แบบ causal อยู่ใน `backtest/indicators.py`
 - `baseline_xm01` คือ `xm-0.1` ที่ใช้ rule ชุดเดียวกับระบบจริง `tests/test_backtest.py` ตรวจว่า candidate ตรงกับ `XMEngine` บนแท่งเดียวกัน
+- `scripts/walk_forward.py` กวาด grid พารามิเตอร์ (ตัวอย่างใน `backtest/grids/`) แล้วทำ walk-forward: แต่ละ fold เลือกชุดที่ดีที่สุดจากช่วง train แล้วนับผลเฉพาะช่วง test ถัดไป ค่าเริ่มต้นคือ train 6 เดือนแบบเลื่อน และ test 1 เดือน (`--anchored` ใช้ช่วง train ที่ขยายจากต้นข้อมูล) แต่ละชุดพารามิเตอร์รันครั้งเดียวตลอดไฟล์แล้วแบ่งไม้ตามเวลาสัญญาณ ผลเขียนที่ `.runtime/backtest/<run>/configs.json`, `walk_forward.json` และ `trades.json`
+
+```sh
+.venv/bin/python scripts/walk_forward.py --strategy rsi2_trend_pullback_r2 --grid backtest/grids/rsi2_trend_pullback_r2.json
+.venv/bin/python scripts/walk_forward.py --strategy rsi2_trend_pullback_r2 --grid backtest/grids/rsi2_trend_pullback_r2.json --data data/history/xm_gold_m1_36m.csv --live-risk-gate  # เทรดเฉพาะไม้ที่ Risk/Paper จริงยอมรับ
+```
 
 ผล backtest เป็นการจำลองจากข้อมูลย้อนหลัง ไม่ใช่หลักฐานว่าระบบจริงจะทำกำไรได้ ผลจากข้อมูลสังเคราะห์ใช้ตรวจว่าโค้ดทำงานถูกต้องเท่านั้น
 
