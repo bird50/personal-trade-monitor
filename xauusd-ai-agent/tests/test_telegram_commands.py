@@ -73,6 +73,17 @@ def test_parse_and_formatting():
     assert "ไม่ได้ส่งคำสั่งซื้อขาย" in live
     assert "ดู /signal" in status_text(SNAP | {"latest_alert": alert}, NOW)
     assert signal_text(SNAP | {"latest_alert": alert}, NOW + 61).startswith("⌛")
+    multi = SNAP | {"engine": SNAP["engine"] | {"strategies": {
+        "rsi2": {"label": "RSI(2) pullback", "enabled": True, "summary": "แนวโน้มขาขึ้น · รอ RSI(2) ย่อ"},
+        "cci": {"label": "CCI + Williams %R", "enabled": False, "summary": "x"},
+        "tpsl": {"label": "TPSL London breakout", "enabled": True, "summary": "Buy Stop 2,406.20 / Sell Stop 2,393.80"}}}}
+    text = status_text(multi, NOW)
+    assert "กลยุทธ์ที่แจ้งเตือน (2):" in text and "• TPSL London breakout: Buy Stop 2,406.20" in text and "CCI" not in text
+    stop = {**alert, "side": "BUY", "order_type": "buy_stop", "strategy_label": "TPSL London breakout",
+            "entry": 2406.2, "cancel_at_utc_s": NOW + 40000}
+    pending = signal_text(SNAP | {"latest_alert": stop}, NOW)
+    assert pending.startswith("🎯 Buy Stop 2,406.20 · ตั้งได้ถึง") and "TPSL London breakout" in pending
+    assert "ฝั่งที่ถูกชนก่อนให้ยกเลิกอีกฝั่ง" in pending
 
 
 def test_switch_requires_working_telegram_and_is_stored(db):

@@ -20,7 +20,9 @@ const ENGINE = {
   engine_error: 'คำนวณไม่สำเร็จ', feed_database_unavailable: 'อ่านฐานข้อมูลราคาไม่ได้'};
 const ALERT = {alert: 'แจ้งแล้ว', missed: 'เลยเวลาแจ้ง', warmup: 'ระหว่างอุ่นเครื่อง', rejected: 'ไม่ผ่าน Risk'};
 const REASON = {net_reward_risk_too_low: 'RR สุทธิต่ำ', spread_atr_too_high: 'Spread สูงเทียบ ATR', stop_atr_out_of_range: 'ระยะ SL นอกช่วง',
-  price_not_on_tick: 'ราคาไม่ตรง tick', levels_inconsistent: 'ระดับราคาไม่สอดคล้อง'};
+  price_not_on_tick: 'ราคาไม่ตรง tick', levels_inconsistent: 'ระดับราคาไม่สอดคล้อง', other_strategy_open: 'กลยุทธ์อื่นถือไม้อยู่'};
+const isStop = a => a && (a.order_type === 'buy_stop' || a.order_type === 'sell_stop');
+const stopName = side => side === 'BUY' ? 'Buy Stop' : 'Sell Stop';
 
 function render() {
   const connected = state?.connected === true;
@@ -63,20 +65,17 @@ function render() {
   text('engineStatus', ENGINE[e.status] || e.status || '—');
   text('engineDetail', w.ready ? `ข้อมูลพร้อม · แท่งล่าสุดปิด ${time(e.last_bar_close_utc_s)}` : w.h1 != null ? `อุ่นเครื่อง H1 ${w.h1}/${w.required_h1} · M5 ${w.m5}/${w.required_m5} แท่ง` : 'รอแท่งราคาแรก');
   dot('engineDot', w.ready && ['watching', 'alert'].includes(e.status), ['engine_error', 'source_mismatch', 'tick_policy_mismatch'].includes(e.status));
-  renderSetup(e, digits); renderLatest(digits); renderRules(); renderAlerts(); renderEvents();
+  renderSetup(e); renderLatest(digits); renderRules(); renderAlerts(); renderEvents();
 }
 
-function renderSetup(e, digits) {
-  const i = e.indicators || {}, pos = e.position;
-  if (pos) {
-    text('setupStatus', `ไม้ ${pos.side} ตามกลยุทธ์ยังไม่จบ`);
-    text('setupDetail', `SL ${price(pos.sl, digits)} · TP ${price(pos.tp, digits)} · ปิดเวลา ${time(pos.time_stop_utc_s)}`);
-    dot('setupDot', true); return;
-  }
-  const bias = i.bias === 'BUY' ? 'แนวโน้มขาขึ้น · รอ RSI(2) ย่อ' : i.bias === 'SELL' ? 'แนวโน้มขาลง · รอ RSI(2) เด้ง' : 'ไม่มีแนวโน้มชัด · ไม่เข้า';
-  text('setupStatus', i.rsi2 == null ? 'รอข้อมูล' : bias);
-  text('setupDetail', i.rsi2 == null ? '—' : `RSI(2) ${fixed(i.rsi2)} · ATR ${fixed(i.atr14, 2)} · H1 EMA50 ${price(i.h1_ema50, digits)}`);
-  dot('setupDot', i.bias != null);
+function renderSetup(e) {
+  const all = e.strategies || {}, chosen = Object.entries(all).filter(([, s]) => s.enabled);
+  if (!chosen.length) { text('setupStatus', 'รอข้อมูล'); text('setupDetail', '—'); dot('setupDot', false); return }
+  const active = chosen.find(([, s]) => s.position || s.indicators?.phase === 'orders');
+  const [, first] = active || chosen[0];
+  text('setupStatus', chosen.length === 1 ? first.label : `ใช้ ${chosen.length} กลยุทธ์ · ${first.label}`);
+  text('setupDetail', first.summary || '—');
+  dot('setupDot', chosen.some(([, s]) => s.position || s.indicators?.bias || s.indicators?.phase === 'orders'));
 }
 
 function renderLatest(digits) {
@@ -84,26 +83,49 @@ function renderLatest(digits) {
   const side = $('latestSide');
   side.className = 'decision' + (a ? ' ' + a.side.toLowerCase() : '');
   if (!a) { text('latestState', 'WAITING'); $('latestState').className = 'tag muted'; return }
-  const open = now <= a.valid_until_utc_s;
+  const open = now <= a.valid_until_utc_s, stop = isStop(a), label = a.strategy_label ? ` · ${a.strategy_label}` : '';
   text('latestSide', a.side);
-  text('latestState', open ? 'เข้าได้' : 'หมดเวลาเข้า'); $('latestState').className = 'tag ' + (open ? 'live' : 'muted');
-  text('latestMeta', `แท่ง M5 ปิด ${stamp(a.bar_close_utc_s)} · ${a.source_symbol}`);
-  text('latestTitle', open ? `เข้า ${a.side} ได้ถึง ${time(a.valid_until_utc_s)}` : `สัญญาณ ${a.side} · หมดเวลาเข้าเมื่อ ${time(a.valid_until_utc_s)}`);
-  text('latestDetail', `${a.side === 'BUY' ? 'Ask ไม่เกิน' : 'Bid ไม่ต่ำกว่า'} ${price(a.entry_limit, a.digits)} · ถ้ายังไม่ถึง SL/TP ให้ปิดเวลา ${time(a.time_stop_utc_s)}`);
+  text('latestState', open ? (stop ? 'ตั้งคำสั่งได้' : 'เข้าได้') : (stop ? 'เลยเวลาตั้ง' : 'หมดเวลาเข้า')); $('latestState').className = 'tag ' + (open ? 'live' : 'muted');
+  text('latestMeta', `แท่ง M5 ปิด ${stamp(a.bar_close_utc_s)} · ${a.source_symbol}${label}`);
+  if (stop) {
+    text('latestTitle', open ? `ตั้ง ${stopName(a.side)} ภายใน ${time(a.valid_until_utc_s)}` : `${stopName(a.side)} · เลยเวลาตั้งเมื่อ ${time(a.valid_until_utc_s)}`);
+    text('latestDetail', `ราคาคำสั่ง ${price(a.entry, a.digits)} · ฝั่งที่ถูกชนก่อนให้ยกเลิกอีกฝั่ง · ยกเลิก/ปิดทั้งหมดเวลา ${time(a.cancel_at_utc_s)}`);
+  } else {
+    text('latestTitle', open ? `เข้า ${a.side} ได้ถึง ${time(a.valid_until_utc_s)}` : `สัญญาณ ${a.side} · หมดเวลาเข้าเมื่อ ${time(a.valid_until_utc_s)}`);
+    text('latestDetail', `${a.side === 'BUY' ? 'Ask ไม่เกิน' : 'Bid ไม่ต่ำกว่า'} ${price(a.entry_limit, a.digits)} · ` + (a.time_stop_utc_s ? `ถ้ายังไม่ถึง SL/TP ให้ปิดเวลา ${time(a.time_stop_utc_s)}` : 'ไม่มีปิดตามเวลา ถือจนถึง SL/TP'));
+  }
   text('latestEntry', price(a.entry, a.digits)); text('latestSl', price(a.sl, a.digits)); text('latestTp', price(a.tp, a.digits)); text('latestRr', fixed(a.net_reward_risk, 2));
-  text('latestHint', `RSI(2) แท่งก่อน ${fixed(a.indicators?.rsi2_previous)} → แท่งสัญญาณ ${fixed(a.indicators?.rsi2)} · ATR ${fixed(a.atr, 2)} · ระยะ SL ${fixed(a.stop_atr, 2)} ATR · spread ที่ใช้คิด ${a.spread_price_used}\nราคาทั้งหมดเป็น bid ของ XM Demo · ระบบไม่ได้ส่งคำสั่งและไม่รู้ราคาที่คุณได้จริง`);
+  const why = a.indicators?.rsi2_previous != null ? `RSI(2) แท่งก่อน ${fixed(a.indicators.rsi2_previous)} → แท่งสัญญาณ ${fixed(a.indicators.rsi2)} · `
+    : stop ? `กรอบ ${price(a.range_low, a.digits)}–${price(a.range_high, a.digits)} (${fixed(a.range_width_pct, 2)}%) · ` : '';
+  text('latestHint', `${why}ATR ${fixed(a.atr, 2)} · ระยะ SL ${fixed(a.stop_atr, 2)} ATR · spread ที่ใช้คิด ${a.spread_price_used}\nราคาทั้งหมดเป็น bid ของ XM Demo · ระบบไม่ได้ส่งคำสั่งและไม่รู้ราคาที่คุณได้จริง`);
 }
 
 function renderRules() {
-  const s = state.strategy, p = state.policy;
-  text('strategyName', `${s.name} · ${s.version}`);
-  text('ruleEntry', `RSI(2) ≤ ${s.rsi_low} แล้วปิดเหนือ high ก่อนหน้า`);
-  text('ruleSl', `${s.sl_atr} × ATR14`);
-  text('ruleTp', `RR สุทธิ ${s.rr} หลังหักต้นทุน`);
-  text('ruleTime', `${s.time_stop_bars} แท่ง M5 (${s.time_stop_bars * 5 / 60} ชม.)`);
-  text('ruleHours', `${String(s.start_hour).padStart(2, '0')}:00–${String(s.end_hour).padStart(2, '0')}:00 · ไม่เข้าศุกร์หลัง 20:00`);
-  text('ruleRisk', `RR ≥ ${p.min_net_reward_risk} · spread/ATR ≤ ${p.max_spread_atr}`);
-  text('ruleFooter', `สัญญาณใช้ได้ ${p.max_signal_age_seconds / 60} นาทีหลังแท่งปิด · ราคาเข้าห่างได้ไม่เกิน ${p.max_entry_drift_atr} ATR`);
+  const list = state.strategies || [], p = state.policy, live = state.engine?.strategies || {};
+  const on = list.filter(s => s.enabled).length;
+  text('strategyName', `เลือก ${on}/${list.length} · ` + (state.conflict === 'skip' ? 'ข้ามสัญญาณเมื่อกลยุทธ์อื่นถือไม้อยู่' : 'แต่ละตัวถือไม้สมมติแยกกัน'));
+  $('strategyList').innerHTML = list.map(s => `<div class="strategy${s.enabled ? ' on' : ''}"><div class="strategy-head">`
+    + `<button class="switch${s.enabled ? ' on' : ''}" data-strategy="${esc(s.id)}" aria-pressed="${s.enabled}" aria-label="${s.enabled ? 'ปิด' : 'เปิด'} ${esc(s.label)}"${busy ? ' disabled' : ''}></button>`
+    + `<b>${esc(s.label)}</b><small>${esc(s.kind === 'pending' ? 'คำสั่งรอ' : 'เข้าตลาด')} · ${esc(s.version)}</small></div>`
+    + `<div class="strategy-now">${esc(live[s.id]?.summary || s.summary || 'รอข้อมูล')}</div>`
+    + `<div class="strategy-rules">${(s.rules || []).map(([k, v]) => `<span>${esc(k)}</span><b>${esc(v)}</b>`).join('')}</div></div>`).join('');
+  document.querySelectorAll('[data-strategy]').forEach(b => b.onclick = () => toggleStrategy(b.dataset.strategy));
+  text('ruleRisk', `RR ≥ ${p.min_net_reward_risk} · SL ${p.min_stop_atr}–${p.max_stop_atr} ATR · spread/ATR ≤ ${p.max_spread_atr}`);
+  text('ruleFooter', `สัญญาณใช้ได้ ${p.max_signal_age_seconds / 60} นาทีหลังแท่งปิด · ราคาเข้าห่างได้ไม่เกิน ${p.max_entry_drift_atr} ATR · ระบบไม่ส่งคำสั่งซื้อขาย`);
+}
+
+async function toggleStrategy(id) {
+  if (busy || !state?.strategies) return;
+  const current = state.strategies.filter(s => s.enabled).map(s => s.id);
+  const next = current.includes(id) ? current.filter(x => x !== id) : [...current, id];
+  if (!next.length) { toast('ต้องเลือกอย่างน้อย 1 กลยุทธ์ · ถ้าไม่ต้องการแจ้งเตือนให้กดปิดเสียงแทน'); return }
+  busy = true;
+  try {
+    const r = await bridge('strategies', {enabled: next});
+    const names = state.strategies.filter(s => (r.enabled || []).includes(s.id)).map(s => s.label).join(', ');
+    toast(r.error || r.detail || `แจ้งเตือนจาก: ${names}`);
+  } catch (e) { toast('บันทึกการเลือกกลยุทธ์ไม่สำเร็จ') }
+  finally { busy = false; await refresh() }
 }
 
 function renderAlerts() {
@@ -113,8 +135,9 @@ function renderAlerts() {
   $('alertsEmpty').classList.toggle('hidden', items.length > 0);
   $('alerts').innerHTML = items.map(a => {
     const why = a.reason_codes?.length ? ' · ' + a.reason_codes.map(r => REASON[r] || r).join(', ') : '';
-    return `<tr><td>${esc(stamp(a.bar_close_utc_s))}<small>${esc((ALERT[a.status] || a.status) + why)}</small></td>`
-      + `<td class="side-${a.side === 'BUY' ? 'buy' : 'sell'}">${esc(a.side)}</td><td>${esc(price(a.entry, a.digits))}</td>`
+    const who = a.strategy_label ? ' · ' + a.strategy_label : '';
+    return `<tr><td>${esc(stamp(a.bar_close_utc_s))}<small>${esc((ALERT[a.status] || a.status) + why + who)}</small></td>`
+      + `<td class="side-${a.side === 'BUY' ? 'buy' : 'sell'}">${esc(isStop(a) ? stopName(a.side) : a.side)}</td><td>${esc(price(a.entry, a.digits))}</td>`
       + `<td>${esc(price(a.sl, a.digits))}<small>TP ${esc(price(a.tp, a.digits))}</small></td><td class="right">${esc(fixed(a.net_reward_risk, 2))}</td></tr>`;
   }).join('');
 }
@@ -122,7 +145,7 @@ function renderAlerts() {
 function renderEvents() {
   const items = state.recent_events || [];
   $('eventsEmpty').classList.toggle('hidden', items.length > 0);
-  $('events').innerHTML = items.map(e => `<div class="event ${esc(e.level)}"><span class="event-mark">${e.level === 'warning' ? '!' : e.kind === 'trade_alert' ? '↗' : '●'}</span><div class="event-body"><strong>${esc(e.title)}</strong><p>${esc(e.message)}</p><time>${esc(stamp(e.at))}</time></div></div>`).join('');
+  $('events').innerHTML = items.map(e => `<div class="event ${esc(e.level)}"><span class="event-mark">${e.level === 'warning' ? '!' : e.kind === 'trade_alert' ? '↗' : e.kind === 'trade_update' ? '↻' : '●'}</span><div class="event-body"><strong>${esc(e.title)}</strong><p>${esc(e.message)}</p><time>${esc(stamp(e.at))}</time></div></div>`).join('');
 }
 
 async function action(name, extra) {

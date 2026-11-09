@@ -5,7 +5,8 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from app.alert_engine import AlertCore, AlertEngine, AlertPolicy, alert_text, gate
+from app.alert_engine import AlertEngine, AlertPolicy, alert_text, gate
+from app.alert_strategies import MarketCore
 from app.alert_main import create_alert_app
 from app.config import ROOT, Settings
 from app.database import Database
@@ -23,6 +24,16 @@ def policy(**changes):
     data.update(warmup_h1_bars=200, warmup_m5_bars=200)
     data.update(changes)
     return AlertPolicy.model_validate(data)
+
+
+def rsi2(pol=None):
+    return (pol or policy()).spec("rsi2")
+
+
+def with_rsi2_params(params):
+    data = json.loads((ROOT / "config/alert-xm.json").read_text())
+    data["strategies"][0]["params"] = params
+    return data
 
 
 @pytest.fixture(scope="module")
@@ -71,7 +82,7 @@ def replay(market, pol, risk, first, last):
     boot = snapshot_at(market, first)
     h1_start = boot.h1[0].open_server_s
     queue = [b for b in h1 if b["open_server_s"] >= h1_start]
-    core, out = AlertCore(pol), []
+    core, out = MarketCore(rsi2(pol)), []
     start = boot.m5[0].open_server_s
     for bar in m5:
         if bar["open_server_s"] < start or bar["open_server_s"] > m5[last]["open_server_s"]:
@@ -79,8 +90,8 @@ def replay(market, pol, risk, first, last):
         close_s = bar["open_server_s"] + 300
         new_h1 = [b for b in queue if b["open_server_s"] + 3600 <= close_s]
         queue = queue[len(new_h1):]
-        signal, _ = core.step(bar, new_h1, POINT, DIGITS)
-        if signal:
+        signals, _ = core.step(bar, new_h1, POINT, DIGITS)
+        for signal in signals:
             spread = round(bar["spread_points"] * POINT, DIGITS)
             _, stop, target, reasons, _ = gate(risk, signal["side"], bar["close"], signal["sl"], signal["tp"], signal["atr"], [spread])
             if not reasons:
@@ -116,29 +127,43 @@ def events(eng, kind=None):
 
 def test_policy_is_the_walk_forward_choice_and_rejects_unsupported_exits():
     pol = AlertPolicy.load(ROOT / "config/alert-xm.json")
-    params = pol.effective_params
+    params = pol.spec("rsi2").effective_params
     assert (params["rr"], params["sl_atr"], params["rsi_low"], params["cost_r_max"]) == (2.5, 1.8, 5, 0.08)
     assert params["exits"] == {"breakeven_r": None, "breakeven_lock_r": None, "time_stop_bars": 48}
+    assert pol.default_selection == ["rsi2"] and [s.id for s in pol.strategies] == ["rsi2", "cci", "ha", "tpsl"]
+    cci, ha = pol.spec("cci").effective_params, pol.spec("ha").effective_params
+    assert (cci["cci_level"], cci["rr"], cci["exits"]) == (150, 2.5, {})  # locked walk-forward config 10
+    assert (ha["er_min"], ha["rr"], ha["exits"]) == (0.30, 2.0, {})  # locked config 0
+    assert pol.spec("cci").time_stop_bars is None and pol.spec("tpsl").kind == "pending"
+    base = pol.spec("rsi2").params
     with pytest.raises(ValidationError):
-        policy(params={**pol.params, "exits": {"breakeven_r": 0.6, "time_stop_bars": 24}})
+        AlertPolicy.model_validate(with_rsi2_params({**base, "exits": {"breakeven_r": 0.6, "time_stop_bars": 24}}))
     with pytest.raises(ValidationError):
-        policy(params={**pol.params, "unknown": 1})
+        AlertPolicy.model_validate(with_rsi2_params({**base, "unknown": 1}))
+    data = json.loads((ROOT / "config/alert-xm.json").read_text())
+    data["strategies"][3]["params"]["range_end_h"] = 2
+    with pytest.raises(ValidationError):
+        AlertPolicy.model_validate(data)
+    data = json.loads((ROOT / "config/alert-xm.json").read_text())
+    data["strategies"][1]["id"] = "rsi2"
+    with pytest.raises(ValidationError):
+        AlertPolicy.model_validate(data)
 
 
 def test_checkpoint_roundtrip_continues_identically(market, risk):
     m5, h1 = market
     pol = policy()
     def run(split=None):
-        core, out, h = AlertCore(pol), [], 0
+        core, out, h = MarketCore(rsi2(pol)), [], 0
         for i, bar in enumerate(m5):
             if i == split:
-                core = AlertCore(pol, json.loads(json.dumps(core.dump())))
+                core = MarketCore(rsi2(pol), json.loads(json.dumps(core.dump())))
             close_s = bar["open_server_s"] + 300
             new = []
             while h < len(h1) and h1[h]["open_server_s"] + 3600 <= close_s:
                 new.append(h1[h]); h += 1
-            signal, _ = core.step(bar, new, POINT, DIGITS)
-            if signal:
+            signals, _ = core.step(bar, new, POINT, DIGITS)
+            for signal in signals:
                 _, stop, target, reasons, _ = gate(risk, signal["side"], bar["close"], signal["sl"], signal["tp"], signal["atr"], [0.25])
                 if not reasons:
                     core.open(signal["side"], stop, target, close_s)
@@ -169,7 +194,8 @@ def test_engine_on_snapshots_matches_core_replay_and_alerts_once(tmp_path, marke
     alerts = events(eng, "trade_alert")
     assert len(alerts) == len(passed)
     payload = json.loads(passed[0]["payload_json"])
-    assert alerts[0]["title"] == f"เข้า {payload['side']} ได้ · GOLD"
+    assert alerts[0]["title"] == f"เข้า {payload['side']} ได้ · GOLD · RSI(2) pullback"
+    assert payload["strategy_id"] == "rsi2" and payload["order_type"] == "market"
     assert "SL" in alerts[0]["message"] and "TP" in alerts[0]["message"]
     assert float(payload["net_reward_risk"]) >= 1.2 and payload["reason_codes"] == []
     assert payload["valid_until_utc_s"] == payload["bar_close_utc_s"] + 300
@@ -251,7 +277,7 @@ def test_source_freshness_and_h1_wait(tmp_path, market, risk):
 
 
 def test_virtual_trade_blocks_until_tp_sl_or_time_stop():
-    core = AlertCore(policy())
+    core = MarketCore(rsi2())
     core.open("BUY", __import__("decimal").Decimal("2390"), __import__("decimal").Decimal("2420"), 1000 * 300)
     bar = {"open_server_s": 1000 * 300, "open": 2400, "high": 2410, "low": 2395, "close": 2405, "spread_points": 25}
     assert core.manage(bar, POINT, DIGITS) is None
@@ -294,7 +320,14 @@ def test_alert_app_routes_auth_and_mute(tmp_path, market, monkeypatch):
             __import__("time").sleep(0.05)
         assert state["mode"] == "alert_only" and state["engine"]["status"] == "bootstrapped"
         assert state["workers"] == {"engine": True, "monitor": True} and state["feed"]["available"]
-        assert state["strategy"]["rr"] == 2.5 and state["policy"]["min_net_reward_risk"] == "1.2"
+        assert state["strategies"][0]["id"] == "rsi2" and state["strategies"][0]["enabled"] is True
+        assert [s["enabled"] for s in state["strategies"]] == [True, False, False, False]
+        assert state["policy"]["min_net_reward_risk"] == "1.2"
+        assert client.post("/strategies", headers=auth, json={"enabled": ["tpsl", "rsi2"]}).json() == {
+            "enabled": ["rsi2", "tpsl"], "changed": True}
+        assert client.post("/strategies", headers=auth, json={"enabled": ["nope"]}).status_code == 422
+        assert client.post("/strategies", headers=auth, json={"enabled": []}).status_code == 422
+        assert client.get("/strategies", headers=auth).json()["enabled"] == ["rsi2", "tpsl"]
         assert "account" not in state and "ai" not in state
         assert state["telegram"]["state"] == "disabled" and state["telegram"]["worker"] is True
         assert client.post("/dashboard/pause", headers=auth, json={"paused": True}).json() == {"paused": True, "changed": True}

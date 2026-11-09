@@ -1,20 +1,55 @@
 {
-  "version": "xm-alert-v1",
+  "version": "xm-alert-v2",
   "mode": "alert_only",
-  "strategy": "rsi2_trend_pullback_r2",
-  "strategy_version": "xm-rsi2-r2-v1",
-  "params": {
-    "rsi_low": 5,
-    "confirm": true,
-    "sl_atr": 1.8,
-    "rr": 2.5,
-    "cost_r_max": 0.08,
-    "blackout_hours": [],
-    "start_hour": 3,
-    "end_hour": 22,
-    "max_spread_atr": 0.2,
-    "exits": {"breakeven_r": null, "breakeven_lock_r": null, "time_stop_bars": 48}
-  },
+  "conflict": "warn",
+  "strategies": [
+    {
+      "id": "rsi2",
+      "label": "RSI(2) pullback",
+      "strategy": "rsi2_trend_pullback_r2",
+      "strategy_version": "xm-rsi2-r2-v1",
+      "enabled": true,
+      "params": {
+        "rsi_low": 5,
+        "confirm": true,
+        "sl_atr": 1.8,
+        "rr": 2.5,
+        "cost_r_max": 0.08,
+        "blackout_hours": [],
+        "start_hour": 3,
+        "end_hour": 22,
+        "max_spread_atr": 0.2,
+        "exits": {"breakeven_r": null, "breakeven_lock_r": null, "time_stop_bars": 48}
+      }
+    },
+    {
+      "id": "cci",
+      "label": "CCI + Williams %R",
+      "strategy": "ent_cci_wr_hook",
+      "strategy_version": "xm-cci-wr-v1",
+      "enabled": false,
+      "params": {"cci_level": 150, "gap_atr": 5, "rr": 2.5, "min_atr": 3.0, "exits": {}}
+    },
+    {
+      "id": "ha",
+      "label": "Heikin-Ashi flip",
+      "strategy": "ent_heikin_ashi_flip",
+      "strategy_version": "xm-ha-flip-v1",
+      "enabled": false,
+      "params": {"er_min": 0.30, "gap_atr": 5, "rr": 2.0, "min_atr": 3.0, "exits": {}}
+    },
+    {
+      "id": "tpsl",
+      "label": "TPSL London breakout",
+      "strategy": "tpsl_london_breakout",
+      "strategy_version": "xm-tpsl-london-v1",
+      "enabled": false,
+      "params": {
+        "range_start_h": 3, "range_end_h": 8, "close_h": 21, "min_width_pct": 0.3, "max_width_pct": 1.6,
+        "offset": 0.2, "stop_cap_pct": 0.6, "rr": 2.5, "breakeven_r": 1.5, "min_range_bars": 48
+      }
+    }
+  ],
   "risk_policy": "config/risk-xm-paper.json",
   "max_entry_drift_atr": "0.25",
   "warmup_h1_bars": 400,

@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from .alert_engine import AlertEngine, AlertPolicy, event
+from .alert_strategies import rules as strategy_rules
 from .config import ROOT, Settings
 from .database import Database
 from .models import StrictModel
@@ -35,6 +36,10 @@ class MuteRequest(StrictModel):
 
 class CommandsRequest(StrictModel):
     enabled: bool
+
+
+class StrategiesRequest(StrictModel):
+    enabled: list[str]
 
 
 def alert_database_path() -> Path:
@@ -97,7 +102,7 @@ class AlertMonitor:
         latest_alert = next((a for a in alerts if a["status"] == "alert"), None)
         warm = bool((status.get("warmup") or {}).get("ready"))
         healthy_status = status.get("status") in ("watching", "alert", "warming_up", "bootstrapped", "waiting_for_h1")
-        params = policy.effective_params
+        selected = set(engine.selection())
         return {
             "connected": True, "checked_at": now, "mode": "alert_only",
             "ready": feed["available"] and warm and healthy_status and all(workers.values()),
@@ -108,10 +113,11 @@ class AlertMonitor:
                 "commands": self.app.state.telegram_commands.status() | {
                     "worker": not self.app.state.telegram_commands_task.done()}},
             "events": events, "recent_events": recent, "latest_event_id": latest,
-            "strategy": {"name": policy.strategy, "version": policy.strategy_version,
-                         "rsi_low": params["rsi_low"], "sl_atr": params["sl_atr"], "rr": params["rr"],
-                         "cost_r_max": params["cost_r_max"], "start_hour": params["start_hour"],
-                         "end_hour": params["end_hour"], "time_stop_bars": params["exits"]["time_stop_bars"]},
+            "strategies": [{"id": s.id, "label": s.label, "strategy": s.strategy, "version": s.strategy_version,
+                            "kind": s.kind, "enabled": s.id in selected, "rules": strategy_rules(s),
+                            "summary": ((status.get("strategies") or {}).get(s.id) or {}).get("summary")}
+                           for s in policy.strategies],
+            "conflict": policy.conflict,
             "policy": {"version": policy.version, "min_net_reward_risk": str(risk.min_net_reward_risk),
                        "min_stop_atr": str(risk.min_stop_atr), "max_stop_atr": str(risk.max_stop_atr),
                        "max_spread_atr": str(risk.max_spread_atr), "spread_floor": str(risk.spread_price),
@@ -159,7 +165,7 @@ def create_alert_app(settings=None, bridge_settings=None, alert_policy=None, dat
         market = MarketStore(feed_config.database_path)
         application.state.settings, application.state.alert_engine = config, engine
         log = logging.getLogger("uvicorn.error")
-        log.info("ALERT mode: %s %s; no AI, no Paper account", policy.strategy, policy.strategy_version)
+        log.info("ALERT mode: %s; no AI, no Paper account", ", ".join(s.strategy_version for s in policy.strategies))
 
         async def poll():
             previous = None
@@ -244,6 +250,24 @@ def create_alert_app(settings=None, bridge_settings=None, alert_policy=None, dat
         authorize(request)
         result = request.app.state.alert_engine.set_muted(body.paused)
         return {"paused": result["muted"], "changed": result["changed"]}
+
+    @app.get("/strategies")
+    def strategies(request: Request):
+        authorize(request)
+        engine = request.app.state.alert_engine
+        selected = engine.selection()
+        return {"enabled": selected, "conflict": engine.policy.conflict,
+                "available": [{"id": s.id, "label": s.label, "strategy": s.strategy, "version": s.strategy_version,
+                               "kind": s.kind} for s in engine.policy.strategies]}
+
+    @app.post("/strategies")
+    def choose_strategies(request: Request, body: StrategiesRequest):
+        """Choose which configured strategies notify (one or several). Stored; no warm-up needed."""
+        authorize(request)
+        try:
+            return request.app.state.alert_engine.set_selection(body.enabled)
+        except ValueError as exc:
+            return JSONResponse(status_code=422, content={"detail": str(exc)})
 
     @app.get("/telegram/status")
     def telegram_status(request: Request):

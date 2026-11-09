@@ -113,8 +113,14 @@ def status_text(snap, now=None) -> str:
     tg = snap.get("telegram") or {}
     telegram = (f"{TELEGRAM_STATE.get(tg.get('state'), tg.get('state'))} · รอส่ง {tg.get('pending', 0)} · "
                 f"ล้มเหลว {tg.get('failed', 0)}")
-    lines = [f"📊 สถานะ XM Control · {stamp(now)}", head, "",
-             f"MT5: {feed}", f"Signal engine: {engine}", f"ตลาดตามกลยุทธ์: {market}", f"Telegram: {telegram}"]
+    lines = [f"📊 สถานะ XM Control · {stamp(now)}", head, "", f"MT5: {feed}", f"Signal engine: {engine}"]
+    chosen = [x for x in (e.get("strategies") or {}).values() if x.get("enabled")]
+    if chosen:
+        lines.append(f"กลยุทธ์ที่แจ้งเตือน ({len(chosen)}):")
+        lines += [f"• {x.get('label')}: {x.get('summary') or 'รอข้อมูล'}" for x in chosen]
+    else:
+        lines.append(f"ตลาดตามกลยุทธ์: {market}")
+    lines.append(f"Telegram: {telegram}")
     a = snap.get("latest_alert")
     if a and now <= (a.get("valid_until_utc_s") or 0):
         lines += ["", f"🔔 มีสัญญาณ {a.get('side')} ที่ยังเข้าได้ถึง {hhmm(a.get('valid_until_utc_s'))} · ดู /signal"]
@@ -130,15 +136,24 @@ def signal_text(snap, now=None) -> str:
         return "ยังไม่มีสัญญาณที่ผ่านเงื่อนไข\nระบบตรวจทุกแท่ง M5 ที่ปิดแล้วร่วมกับแนวโน้ม H1"
     d, side = a.get("digits") or 2, a.get("side")
     open_ = now <= (a.get("valid_until_utc_s") or 0)
-    icon = "📈" if side == "BUY" else "📉"
-    head = (f"{icon} สัญญาณ {side} · เข้าได้ถึง {hhmm(a.get('valid_until_utc_s'))}" if open_ else
-            f"⌛ สัญญาณ {side} · หมดเวลาเข้าเมื่อ {hhmm(a.get('valid_until_utc_s'))} · ห้ามเข้าตามข้อความนี้")
-    limit = "Ask ไม่เกิน" if side == "BUY" else "Bid ไม่ต่ำกว่า"
-    lines = [head, f"แท่ง M5 ปิด {stamp(a.get('bar_close_utc_s'))} · {a.get('source_symbol', '')}".rstrip(" ·"),
-             f"ราคาอ้างอิง {price(a.get('entry'), d)} · {limit} {price(a.get('entry_limit'), d)}",
-             f"SL {price(a.get('sl'), d)} · TP {price(a.get('tp'), d)} · RR สุทธิ {number(a.get('net_reward_risk'), 2)}",
-             f"ถ้ายังไม่ถึง SL/TP ให้ปิดเวลา {hhmm(a.get('time_stop_utc_s'))}",
-             "XM Control แจ้งเตือนเท่านั้น ไม่ได้ส่งคำสั่งซื้อขาย"]
+    label = f" · {a['strategy_label']}" if a.get("strategy_label") else ""
+    meta = f"แท่ง M5 ปิด {stamp(a.get('bar_close_utc_s'))} · {a.get('source_symbol', '')}{label}".rstrip(" ·")
+    levels = f"SL {price(a.get('sl'), d)} · TP {price(a.get('tp'), d)} · RR สุทธิ {number(a.get('net_reward_risk'), 2)}"
+    if a.get("order_type") in ("buy_stop", "sell_stop"):
+        name = "Buy Stop" if side == "BUY" else "Sell Stop"
+        head = (f"🎯 {name} {price(a.get('entry'), d)} · ตั้งได้ถึง {hhmm(a.get('valid_until_utc_s'))}" if open_ else
+                f"⌛ {name} {price(a.get('entry'), d)} · เลยเวลาตั้งเมื่อ {hhmm(a.get('valid_until_utc_s'))}")
+        lines = [head, meta, levels, f"ฝั่งที่ถูกชนก่อนให้ยกเลิกอีกฝั่ง · ยกเลิก/ปิดทั้งหมด {hhmm(a.get('cancel_at_utc_s'))}"]
+    else:
+        icon = "📈" if side == "BUY" else "📉"
+        head = (f"{icon} สัญญาณ {side} · เข้าได้ถึง {hhmm(a.get('valid_until_utc_s'))}" if open_ else
+                f"⌛ สัญญาณ {side} · หมดเวลาเข้าเมื่อ {hhmm(a.get('valid_until_utc_s'))} · ห้ามเข้าตามข้อความนี้")
+        limit = "Ask ไม่เกิน" if side == "BUY" else "Bid ไม่ต่ำกว่า"
+        exit_at = (f"ถ้ายังไม่ถึง SL/TP ให้ปิดเวลา {hhmm(a.get('time_stop_utc_s'))}" if a.get("time_stop_utc_s")
+                   else "ไม่มีปิดตามเวลา ถือจนถึง SL/TP")
+        lines = [head, meta, f"ราคาอ้างอิง {price(a.get('entry'), d)} · {limit} {price(a.get('entry_limit'), d)}",
+                 levels, exit_at]
+    lines.append("XM Control แจ้งเตือนเท่านั้น ไม่ได้ส่งคำสั่งซื้อขาย")
     return "\n".join(lines)[:MAX_TEXT]
 
 

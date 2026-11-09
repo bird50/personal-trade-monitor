@@ -1,20 +1,25 @@
-"""Alert-only XM engine: closed MT5 bars -> RSI(2) strategy -> Risk level checks -> alerts.
+"""Alert-only XM engine: closed MT5 bars -> selected strategies -> Risk level checks -> alerts.
 
-No AI, no Paper account and no orders. The strategy object is the same class the backtest
-and walk-forward studies used (``backtest/strategies/rsi2_trend_pullback_r2.py``) and is fed
-bars with the backtest's visibility rules, so a live alert corresponds to a backtest signal:
+No AI, no Paper account and no orders. Every strategy listed in ``config/alert-xm.json`` is
+computed on every closed M5 bar by its own core (``app/alert_strategies.py``) with the backtest's
+visibility rules, and keeps its own hypothetical trade, so each strategy's alerts correspond to
+its standalone backtest:
 
 * a strategy sees a closed M5 bar at its close; an H1 bar is visible once its close <= that time;
-* after a signal that passes the Risk level checks, a hypothetical trade blocks new signals
-  until its SL/TP is touched on a later M5 bar or its time stop elapses (as the backtest's
-  one-position rule does). It is never sized, filled or booked.
+* after a signal that passes the Risk level checks, a hypothetical trade blocks that strategy's
+  new signals until its SL/TP is touched on a later M5 bar or its time stop elapses. It is never
+  sized, filled or booked.
+
+Which strategies notify is a runtime selection stored in ``control_meta`` (XM Control or
+``POST /strategies``); all configured strategies keep computing, so switching needs no warm-up.
+With ``conflict="skip"`` a strategy's new signal is rejected while another selected strategy holds
+a hypothetical trade; with ``"warn"`` (default) the alert carries a note about the other trade.
 
 State is a JSON checkpoint in its own database, separate from the Paper account.
 """
 import hashlib
 import json
 import time
-from collections import Counter
 from datetime import datetime
 from decimal import Decimal, localcontext
 from pathlib import Path
@@ -22,40 +27,33 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from backtest import indicators
-from backtest.engine import Context
-from backtest.strategies import load as load_strategy
-
+from .alert_strategies import StrategySpec, make_core
 from .config import ROOT
 from .mt5_bridge import Snapshot
 from .risk_manager import RiskPolicy, level_metrics
 from .xm_engine import tick_round
 
-STATE_VERSION = 1
-SERIALIZABLE = {cls.__name__: cls for cls in (indicators.EMA, indicators.RMA, indicators.RSI, indicators.ATR)}
-DIAGNOSTIC_FIELDS = ("params", "cost_filtered_times")
+STATE_VERSION = 2
+SELECTION_KEY = "alert_strategies"
 
 
 class AlertPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    version: Literal["xm-alert-v1"]
+    version: Literal["xm-alert-v2"]
     mode: Literal["alert_only"]
-    strategy: Literal["rsi2_trend_pullback_r2"]
-    strategy_version: Annotated[str, Field(pattern=r"^[a-z0-9.-]{1,40}$")]
-    params: dict
+    strategies: Annotated[tuple[StrategySpec, ...], Field(min_length=1, max_length=8)]
+    conflict: Literal["warn", "skip"] = "warn"
     risk_policy: Annotated[str, Field(min_length=1, max_length=200)]
     max_entry_drift_atr: Annotated[Decimal, Field(gt=0, le=5, allow_inf_nan=False)]
     warmup_h1_bars: Annotated[int, Field(ge=200, le=5000, strict=True)]
     warmup_m5_bars: Annotated[int, Field(ge=200, le=5000, strict=True)]
 
     @model_validator(mode="after")
-    def supported_exits(self):
-        params = load_strategy(self.strategy)(self.params).params  # rejects unknown parameters
-        exits = params.get("exits") or {}
-        if any(exits.get(key) is not None for key in ("breakeven_r", "breakeven_lock_r", "trail_start_r", "trail_r")):
-            raise ValueError("Alert mode tracks fixed SL/TP only; breakeven and trailing exits are not supported")
-        if not isinstance(exits.get("time_stop_bars"), int) or not 1 <= exits["time_stop_bars"] <= 2016:
-            raise ValueError("Alert mode requires an integer time_stop_bars")
+    def unique(self):
+        ids = [s.id for s in self.strategies]
+        versions = [s.strategy_version for s in self.strategies]
+        if len(set(ids)) != len(ids) or len(set(versions)) != len(versions):
+            raise ValueError("Strategy ids and strategy_version values must be unique")
         return self
 
     @classmethod
@@ -66,117 +64,13 @@ class AlertPolicy(BaseModel):
         path = Path(self.risk_policy)
         return path if path.is_absolute() else ROOT / path
 
-    @property
-    def effective_params(self) -> dict:
-        return load_strategy(self.strategy)(self.params).params
+    def spec(self, strategy_id) -> StrategySpec:
+        return next(s for s in self.strategies if s.id == strategy_id)
 
     @property
-    def time_stop_bars(self) -> int:
-        return self.effective_params["exits"]["time_stop_bars"]
-
-
-def dump_value(value):
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return value
-    if isinstance(value, Counter):
-        return {"counter": dict(value)}
-    if isinstance(value, dict):
-        if not all(isinstance(key, str) for key in value):
-            raise TypeError("State dictionaries need string keys")
-        return {"dict": {key: dump_value(item) for key, item in value.items()}}
-    if isinstance(value, (list, tuple)):
-        return {"list": [dump_value(item) for item in value]}
-    name = type(value).__name__
-    if SERIALIZABLE.get(name) is type(value):
-        return {"indicator": name, "fields": {key: dump_value(item) for key, item in vars(value).items()}}
-    raise TypeError(f"Cannot checkpoint {name}")
-
-
-def load_value(value):
-    if not isinstance(value, dict):
-        return value
-    if "counter" in value:
-        return Counter(value["counter"])
-    if "dict" in value:
-        return {key: load_value(item) for key, item in value["dict"].items()}
-    if "list" in value:
-        return [load_value(item) for item in value["list"]]
-    cls = SERIALIZABLE[value["indicator"]]
-    obj = cls.__new__(cls)
-    obj.__dict__.update({key: load_value(item) for key, item in value["fields"].items()})
-    return obj
-
-
-class AlertCore:
-    """Strategy plus the hypothetical one-trade blocker, stepped once per closed M5 bar."""
-
-    def __init__(self, policy: AlertPolicy, state: dict | None = None):
-        self.policy = policy
-        self.strategy = load_strategy(policy.strategy)(policy.params)
-        self.position, self.m5_count, self.h1_count = None, 0, 0
-        if state:
-            for key, value in state["strategy"].items():
-                setattr(self.strategy, key, load_value(value))
-            self.position, self.m5_count, self.h1_count = state["position"], state["m5_count"], state["h1_count"]
-
-    def dump(self) -> dict:
-        fields = {key: dump_value(value) for key, value in vars(self.strategy).items() if key not in DIAGNOSTIC_FIELDS}
-        return {"strategy": fields, "position": self.position, "m5_count": self.m5_count, "h1_count": self.h1_count}
-
-    @property
-    def warm(self) -> bool:
-        return self.h1_count >= self.policy.warmup_h1_bars and self.m5_count >= self.policy.warmup_m5_bars
-
-    def manage(self, bar, point, digits):
-        """Close the hypothetical trade on time stop (at bar open) or a touched SL/TP."""
-        pos = self.position
-        if pos is None:
-            return None
-        if bar["open_server_s"] >= pos["time_stop_server_s"]:
-            reason = "TIME"
-        else:
-            spread = round(bar["spread_points"] * point, digits)
-            sl, tp = float(pos["sl"]), float(pos["tp"])
-            if pos["side"] == "BUY":
-                reason = "SL" if bar["low"] <= sl else "TP" if bar["high"] >= tp else None
-            else:
-                reason = "SL" if bar["high"] + spread >= sl else "TP" if bar["low"] + spread <= tp else None
-        if reason is None:
-            return None
-        self.position = None
-        return {**pos, "exit_reason": reason, "exit_bar_server_s": bar["open_server_s"]}
-
-    def step(self, bar, new_h1, point, digits):
-        exit_ = self.manage(bar, point, digits)
-        ctx = Context(bar["open_server_s"] + 300, bar, self.m5_count, [], {"H1": [], "H4": [], "D1": []},
-                      {"M5": [bar], "H1": list(new_h1)}, None if self.position is None else dict(self.position),
-                      0.0, point, digits, float(point))
-        trigger_rsi = self.strategy.prev_rsi  # the confirm rule fires on the previous bar's RSI(2)
-        signal = self.strategy.on_bar(ctx)
-        if signal:
-            signal = {**signal, "rsi2_previous": trigger_rsi}
-        self.m5_count += 1
-        self.h1_count += len(new_h1)
-        return signal, exit_
-
-    def open(self, side, sl, tp, signal_close_server_s):
-        self.position = {"side": side, "sl": format(sl, "f"), "tp": format(tp, "f"),
-                         "signal_close_server_s": signal_close_server_s,
-                         "time_stop_server_s": signal_close_server_s + self.policy.time_stop_bars * 300}
-
-    def indicators(self) -> dict:
-        s = self.strategy
-        fast, slow, close = s.h1_fast.value, s.h1_slow.value, s.h1_close
-        bias = None
-        if None not in (fast, slow, close, s.ema200.value) and s.prev is not None:
-            m5_close = s.prev["close"]
-            if close > slow and fast > slow and m5_close > s.ema200.value:
-                bias = "BUY"
-            elif close < slow and fast < slow and m5_close < s.ema200.value:
-                bias = "SELL"
-        return {"rsi2": s.rsi.value, "m5_ema200": s.ema200.value, "atr14": s.atr.value,
-                "h1_close": close, "h1_ema50": fast, "h1_ema200": slow, "bias": bias,
-                "armed": dict(s.armed), "m5_close": None if s.prev is None else s.prev["close"]}
+    def default_selection(self) -> list[str]:
+        chosen = [s.id for s in self.strategies if s.enabled]
+        return chosen or [self.strategies[0].id]
 
 
 def gate(risk: RiskPolicy, side, close, sl, tp, atr, spreads):
@@ -200,15 +94,45 @@ def price(value, digits) -> str:
     return f"{Decimal(str(value)):,.{digits}f}"
 
 
-def alert_text(payload) -> tuple[str, str]:
+def side_name(side) -> str:
+    return "Buy" if side == "BUY" else "Sell"
+
+
+def alert_text(payload, conflicts=()) -> tuple[str, str]:
+    """Title and message for a market-entry alert."""
     d, side = payload["digits"], payload["side"]
+    label = payload.get("strategy_label")
     limit = ("Ask ≤ " if side == "BUY" else "Bid ≥ ") + price(payload["entry_limit"], d)
-    title = f"เข้า {side} ได้ · {payload['source_symbol']}"
+    title = f"เข้า {side} ได้ · {payload['source_symbol']}" + (f" · {label}" if label else "")
+    exit_at = (f"ถ้ายังไม่ถึง SL/TP ให้ปิดเวลา {local_time(payload['time_stop_utc_s'])}"
+               if payload.get("time_stop_utc_s") else "ไม่มีปิดตามเวลา ถือจนถึง SL/TP")
     message = (f"ราคาอ้างอิง {price(payload['entry'], d)} · SL {price(payload['sl'], d)} · TP {price(payload['tp'], d)}"
                f" · RR สุทธิ {Decimal(payload['net_reward_risk']):.2f}\n"
-               f"เข้าภายใน {local_time(payload['valid_until_utc_s'])} เมื่อ {limit}"
-               f" · ถ้ายังไม่ถึง SL/TP ให้ปิดเวลา {local_time(payload['time_stop_utc_s'])}")
-    return title, message
+               f"เข้าภายใน {local_time(payload['valid_until_utc_s'])} เมื่อ {limit} · {exit_at}")
+    return title, message + conflict_note(conflicts)
+
+
+def setup_text(payloads, conflicts=()) -> tuple[str, str]:
+    """Title and message for a pending-order (TPSL) setup; ``payloads`` are the accepted sides."""
+    first = payloads[0]
+    d, label = first["digits"], first.get("strategy_label", "")
+    names = " / ".join(f"{side_name(p['side'])} Stop" for p in payloads)
+    title = f"ตั้ง {names} · {first['source_symbol']}" + (f" · {label}" if label else "")
+    lines = [f"{side_name(p['side'])} Stop {price(p['entry'], d)} · SL {price(p['sl'], d)} · TP {price(p['tp'], d)}"
+             f" · RR สุทธิ {Decimal(p['net_reward_risk']):.2f}" for p in payloads]
+    rules = [f"ตั้งภายใน {local_time(first['valid_until_utc_s'])}"]
+    if len(payloads) > 1:
+        rules.append("ฝั่งที่ถูกชนก่อนให้ยกเลิกอีกฝั่ง")
+    if first.get("breakeven_r"):
+        rules.append(f"เลื่อน SL เป็นทุนเมื่อได้ +{first['breakeven_r']:g}R")
+    rules.append(f"ยกเลิก/ปิดทั้งหมดเวลา {local_time(first['cancel_at_utc_s'])}")
+    return title, "\n".join(lines) + "\n" + " · ".join(rules) + conflict_note(conflicts)
+
+
+def conflict_note(conflicts) -> str:
+    if not conflicts:
+        return ""
+    return "\n⚠️ ขัดกับไม้สมมติที่ยังเปิดอยู่: " + ", ".join(f"{label} {side}" for label, side in conflicts)
 
 
 class AlertEngine:
@@ -216,7 +140,10 @@ class AlertEngine:
         self.db, self.policy, self.risk = db, policy, risk
         if risk.source_server is None or risk.source_broker_symbol is None:
             raise ValueError("Alert mode requires a Risk policy pinned to an MT5 server and symbol")
-        material = {"alert": policy.model_dump(mode="json"), "params": policy.effective_params,
+        alert = policy.model_dump(mode="json")
+        for spec in alert["strategies"]:  # display name and default selection do not change computation
+            spec.pop("label"), spec.pop("enabled")
+        material = {"alert": alert, "params": {s.id: s.effective_params for s in policy.strategies},
                     "risk": risk.model_dump(mode="json", exclude_none=True), "state_version": STATE_VERSION}
         self.config_hash = hashlib.sha256(json.dumps(material, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         with db.connect() as conn:
@@ -240,8 +167,8 @@ class AlertEngine:
         with self.db.connect() as conn:
             row = conn.execute("SELECT state_json, status_json FROM alert_engine WHERE id=1").fetchone()
             previous = json.loads(row["status_json"]) if row else {}
-            current = {**{k: v for k, v in previous.items() if k in ("warmup", "position", "indicators", "last_m5_server_s")},
-                       "status": status}
+            keep = ("warmup", "position", "indicators", "last_m5_server_s", "strategies")
+            current = {**{k: v for k, v in previous.items() if k in keep}, "status": status}
             conn.execute("""INSERT INTO alert_engine VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET
                 status_json=excluded.status_json, updated_at=excluded.updated_at""",
                          (row["state_json"] if row else "{}", json.dumps(current), time.time()))
@@ -262,6 +189,42 @@ class AlertEngine:
                       "ปิดเสียงแจ้งเตือนสัญญาณ" if muted else "เปิดแจ้งเตือนสัญญาณ",
                       "ยังคำนวณและบันทึกสัญญาณต่อ แต่ไม่ส่งการแจ้งเตือน" if muted else "แจ้งเตือนเมื่อมีจังหวะเข้า trade ใหม่")
         return {"muted": muted, "changed": changed}
+
+    # ------------------------------------------------------------------ strategy selection
+    def selection(self, conn=None) -> list[str]:
+        """Strategy ids that notify, in config order (stored choice, else the config defaults)."""
+        if conn is None:
+            with self.db.connect() as own:
+                return self.selection(own)
+        row = conn.execute("SELECT value FROM control_meta WHERE key=?", (SELECTION_KEY,)).fetchone()
+        known = [s.id for s in self.policy.strategies]
+        if row is None:
+            return self.policy.default_selection
+        try:
+            stored = set(json.loads(row[0]))
+        except (ValueError, TypeError):
+            return self.policy.default_selection
+        chosen = [i for i in known if i in stored]
+        return chosen or self.policy.default_selection
+
+    def set_selection(self, ids):
+        known = [s.id for s in self.policy.strategies]
+        unknown = sorted(set(ids) - set(known))
+        if unknown:
+            raise ValueError(f"Unknown strategy ids: {unknown}")
+        if not ids:
+            raise ValueError("Select at least one strategy (use mute to silence alerts)")
+        chosen = [i for i in known if i in set(ids)]
+        with self.db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            changed = self.selection(conn) != chosen
+            conn.execute("INSERT INTO control_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                         (SELECTION_KEY, json.dumps(chosen)))
+            if changed:
+                labels = ", ".join(self.policy.spec(i).label for i in chosen)
+                event(conn, f"strategies:{time.time_ns()}", "strategies_changed", "info", "เปลี่ยนกลยุทธ์ที่แจ้งเตือน",
+                      f"แจ้งเตือนจาก: {labels}")
+        return {"enabled": chosen, "changed": changed}
 
     # ------------------------------------------------------------------ processing
     def process(self, snapshot: Snapshot, now=None):
@@ -308,15 +271,16 @@ class AlertEngine:
                            "missing_overlap": "ข้อมูลราคาขาดช่วงระหว่างที่บริการหยุด",
                            "state_version_changed": "รูปแบบ checkpoint เปลี่ยน"}[reset]
                           + " · ต้องอุ่นเครื่อง indicator ก่อนแจ้งเตือนอีกครั้ง")
-                core = AlertCore(self.policy)
+                cores = {s.id: make_core(s) for s in self.policy.strategies}
                 state = {"version": STATE_VERSION, "config_hash": self.config_hash, "last_m5": 0, "last_h1": 0,
                          "bootstrapped_at": now, "reset_reason": reset}
                 live = False
             else:
-                core = AlertCore(self.policy, state["core"])
+                cores = {s.id: make_core(s, state["cores"][s.id]) for s in self.policy.strategies}
                 live = True
-            status = self._run(conn, core, state, incoming, snapshot, now, live)
-            state["core"], state["history"], state["offset"] = core.dump(), incoming, snapshot.observed_utc_offset_s
+            status = self._run(conn, cores, state, incoming, snapshot, now, live)
+            state["cores"] = {key: core.dump() for key, core in cores.items()}
+            state["history"], state["offset"] = incoming, snapshot.observed_utc_offset_s
             state["last_status"] = status
             self._save(conn, state, status, now)
         return status
@@ -334,12 +298,18 @@ class AlertEngine:
             state_json=excluded.state_json, status_json=excluded.status_json, updated_at=excluded.updated_at""",
                      (json.dumps(state, allow_nan=False), json.dumps(status, allow_nan=False), now))
 
-    def _run(self, conn, core, state, incoming, snapshot, now, live):
+    def warm(self, core) -> bool:
+        return core.h1_count >= self.policy.warmup_h1_bars and core.m5_count >= self.policy.warmup_m5_bars
+
+    def _run(self, conn, cores, state, incoming, snapshot, now, live):
         h1, offset = incoming["h1"], snapshot.observed_utc_offset_s
         h1_opens = {b["open_server_s"] for b in h1}
         latest_open = incoming["m5"][-1]["open_server_s"]
-        status_kind, last_alert, waiting = None, None, False
-        processed = 0
+        selected, muted = set(self.selection(conn)), self.muted(conn)
+        exits = state.setdefault("last_virtual_exit", {})
+        if not isinstance(exits, dict) or "exit_reason" in exits:
+            exits = state["last_virtual_exit"] = {}
+        status_kind, last_alert, waiting, processed = None, None, False, 0
         for bar in incoming["m5"]:
             open_s = bar["open_server_s"]
             if open_s <= state["last_m5"]:
@@ -349,49 +319,55 @@ class AlertEngine:
                 waiting = True  # the H1 bar closing with this M5 bar is not in this snapshot yet
                 break
             new_h1 = [b for b in h1 if b["open_server_s"] > state["last_h1"] and b["open_server_s"] + 3600 <= close_s]
-            signal, exit_ = core.step(bar, new_h1, snapshot.point, snapshot.digits)
+            latest = open_s == latest_open
+            close_utc_s = close_s - offset
+            spreads = [round(bar["spread_points"] * snapshot.point, snapshot.digits)]
+            if live and latest:
+                spreads.append(round(snapshot.quote.ask - snapshot.quote.bid, snapshot.digits))
+            bar_ctx = {"bar": bar, "close_s": close_s, "close_utc_s": close_utc_s, "spreads": spreads, "live": live,
+                       "fresh": latest and 0 <= now - close_utc_s <= self.risk.max_signal_age_seconds,
+                       "selected": selected, "muted": muted, "now": now, "snapshot": snapshot, "cores": cores}
+            for spec in self.policy.strategies:
+                core = cores[spec.id]
+                signals, exit_ = core.step(bar, new_h1, snapshot.point, snapshot.digits)
+                if exit_ is not None:
+                    exits[spec.id] = exit_
+                for signal in signals:
+                    handler = {"entry": self._entry, "setup": self._setup}.get(signal["type"], self._update)
+                    kind, row_id = handler(conn, spec, core, signal, bar_ctx)
+                    if kind:
+                        status_kind = kind if status_kind != "alert" else status_kind
+                    if row_id:
+                        last_alert = row_id
             if new_h1:
                 state["last_h1"] = new_h1[-1]["open_server_s"]
             state["last_m5"] = open_s
             processed += 1
-            if exit_ is not None:
-                state["last_virtual_exit"] = exit_
-            if not signal:
-                continue
-            latest = open_s == latest_open
-            spreads = [round(bar["spread_points"] * snapshot.point, snapshot.digits)]
-            if live and latest:
-                spreads.append(round(snapshot.quote.ask - snapshot.quote.bid, snapshot.digits))
-            entry, stop, target, reasons, values = gate(self.risk, signal["side"], bar["close"], signal["sl"],
-                                                        signal["tp"], signal["atr"], spreads)
-            if not reasons:
-                core.open(signal["side"], stop, target, close_s)
-            if not live:
-                continue
-            close_utc_s = close_s - offset
-            fresh = latest and 0 <= now - close_utc_s <= self.risk.max_signal_age_seconds
-            kind = "rejected" if reasons else "warmup" if not core.warm else "alert" if fresh else "missed"
-            payload = self._payload(signal, bar, entry, stop, target, reasons, values, snapshot, close_s, close_utc_s, core)
-            cursor = conn.execute("INSERT OR IGNORE INTO trade_alerts(alert_key,status,side,bar_close_utc_ms,created_at,payload_json) VALUES(?,?,?,?,?,?)",
-                                  (payload["alert_key"], kind, signal["side"], close_utc_s * 1000, now, json.dumps(payload, allow_nan=False)))
-            if kind == "alert" and cursor.rowcount and not self.muted(conn):
-                title, message = alert_text(payload)
-                event(conn, "alert:" + payload["alert_key"], "trade_alert", "success", title, message, now)
-            status_kind = kind
-            last_alert = cursor.lastrowid if cursor.rowcount else None
+        warm = all(self.warm(c) for c in cores.values())
+        strategies = {}
+        for spec in self.policy.strategies:
+            core = cores[spec.id]
+            position = core.position
+            if position is not None and position.get("time_stop_server_s") is not None:
+                position = {**position, "time_stop_utc_s": position["time_stop_server_s"] - offset}
+            strategies[spec.id] = {"label": spec.label, "strategy": spec.strategy, "version": spec.strategy_version,
+                                   "kind": spec.kind, "enabled": spec.id in selected, "position": position,
+                                   "indicators": core.indicators(), "summary": core.summary(),
+                                   "last_virtual_exit": exits.get(spec.id)}
+        primary = next((i for i in strategies if strategies[i]["enabled"]), next(iter(strategies)))
         status = {"status": ("bootstrapped" if not live else "waiting_for_h1" if waiting and not processed
-                             else status_kind if status_kind == "alert" else "watching" if core.warm else "warming_up"),
-                  "mode": "alert_only", "engine_version": self.policy.strategy_version, "strategy": self.policy.strategy,
-                  "symbol": "XM:XAUUSD", "source_symbol": snapshot.broker_symbol,
+                             else status_kind if status_kind == "alert" else "watching" if warm else "warming_up"),
+                  "mode": "alert_only", "engine_version": "+".join(s.strategy_version for s in self.policy.strategies),
+                  "strategy": primary, "symbol": "XM:XAUUSD", "source_symbol": snapshot.broker_symbol,
                   "last_m5_server_s": state["last_m5"],
                   "last_bar_close_utc_s": state["last_m5"] + 300 - offset if state["last_m5"] else None,
                   "new_bars": processed, "snapshot_utc_s": snapshot.captured_at_utc_s,
-                  "warmup": {"h1": core.h1_count, "m5": core.m5_count, "required_h1": self.policy.warmup_h1_bars,
-                             "required_m5": self.policy.warmup_m5_bars, "ready": core.warm},
-                  "position": None if core.position is None else {
-                      **core.position, "time_stop_utc_s": core.position["time_stop_server_s"] - offset},
-                  "last_virtual_exit": state.get("last_virtual_exit"),
-                  "indicators": core.indicators()}
+                  "warmup": {"h1": min(c.h1_count for c in cores.values()), "m5": min(c.m5_count for c in cores.values()),
+                             "required_h1": self.policy.warmup_h1_bars, "required_m5": self.policy.warmup_m5_bars,
+                             "ready": warm},
+                  "position": strategies[primary]["position"], "indicators": strategies[primary]["indicators"],
+                  "strategies": strategies, "selected": sorted(selected, key=list(strategies).index),
+                  "conflict": self.policy.conflict}
         if last_alert:
             status["last_alert_id"] = last_alert
         elif not processed and state.get("last_status"):
@@ -402,26 +378,140 @@ class AlertEngine:
                 status["status"] = "watching"
         return status
 
-    def _payload(self, signal, bar, entry, stop, target, reasons, values, snapshot, close_s, close_utc_s, core):
-        side, atr = signal["side"], Decimal(str(signal["atr"]))
-        drift = atr * self.policy.max_entry_drift_atr
-        limit = tick_round(entry + drift if side == "BUY" else entry - drift, self.risk.price_tick)
-        version = self.policy.strategy_version
+    # ------------------------------------------------------------------ signal handlers
+    def _conflicts(self, spec, ctx, side=None):
+        """Other selected strategies holding a hypothetical trade: [(label, side)]."""
+        out = []
+        for other in self.policy.strategies:
+            pos = ctx["cores"][other.id].position
+            if other.id != spec.id and other.id in ctx["selected"] and pos and (side is None or pos["side"] != side):
+                out.append((other.label, pos["side"]))
+        return out
+
+    def _kind(self, core, reasons, ctx):
+        return "rejected" if reasons else "warmup" if not self.warm(core) else "alert" if ctx["fresh"] else "missed"
+
+    def _insert(self, conn, payload, kind, ctx):
+        cursor = conn.execute("INSERT OR IGNORE INTO trade_alerts(alert_key,status,side,bar_close_utc_ms,created_at,payload_json) VALUES(?,?,?,?,?,?)",
+                              (payload["alert_key"], kind, payload["side"], ctx["close_utc_s"] * 1000, ctx["now"],
+                               json.dumps(payload, allow_nan=False)))
+        return cursor.rowcount, (cursor.lastrowid if cursor.rowcount else None)
+
+    def _entry(self, conn, spec, core, signal, ctx):
+        bar, side = ctx["bar"], signal["side"]
+        skip = self.policy.conflict == "skip" and self._conflicts(spec, ctx)
+        entry, stop, target, reasons, values = gate(self.risk, side, bar["close"], signal["sl"], signal["tp"],
+                                                    signal["atr"], ctx["spreads"])
+        if skip:
+            reasons.insert(0, "other_strategy_open")
+        if not reasons:
+            core.open(side, stop, target, ctx["close_s"])
+        if not ctx["live"] or spec.id not in ctx["selected"]:
+            return None, None
+        kind = self._kind(core, reasons, ctx)
+        payload = self._payload(spec, core, signal, side, entry, stop, target, reasons, values, ctx)
+        payload["entry_limit"] = format(self._limit(side, entry, signal["atr"]), "f")
+        inserted, row_id = self._insert(conn, payload, kind, ctx)
+        if kind == "alert" and inserted and not ctx["muted"]:
+            title, message = alert_text(payload, self._conflicts(spec, ctx, side))
+            event(conn, "alert:" + payload["alert_key"], "trade_alert", "success", title, message, ctx["now"])
+        return kind, row_id
+
+    def _setup(self, conn, spec, core, signal, ctx):
+        skip = self.policy.conflict == "skip" and self._conflicts(spec, ctx)
+        sides, accepted = {}, {}
+        for side, order in signal["orders"].items():
+            entry, stop, target, reasons, values = gate(self.risk, side, order["level"], order["sl"], order["tp"],
+                                                        signal["atr"], ctx["spreads"])
+            if skip:
+                reasons.insert(0, "other_strategy_open")
+            sides[side] = (entry, stop, target, reasons, values)
+            if not reasons:
+                accepted[side] = {"level": entry, "sl": stop, "tp": target}
+        show = ctx["live"] and spec.id in ctx["selected"]
+        kind = self._kind(core, [] if accepted else ["rejected"], ctx) if show else None
+        core.arm(accepted, alerted=kind == "alert")
+        if not show:
+            return None, None
+        offset, rows, last_id = ctx["snapshot"].observed_utc_offset_s, [], None
+        for side, (entry, stop, target, reasons, values) in sides.items():
+            payload = self._payload(spec, core, signal, side, entry, stop, target, reasons, values, ctx)
+            payload.update(order_type="buy_stop" if side == "BUY" else "sell_stop", entry_limit=None,
+                           cancel_at_utc_s=signal["cancel_server_s"] - offset, time_stop_utc_s=signal["cancel_server_s"] - offset,
+                           range_high=signal["range_high"], range_low=signal["range_low"],
+                           range_width_pct=round(signal["width_pct"], 4), breakeven_r=core.p.breakeven_r)
+            side_kind = "rejected" if reasons else kind
+            inserted, row_id = self._insert(conn, payload, side_kind, ctx)
+            last_id = row_id or last_id
+            if side_kind == "alert" and inserted:
+                rows.append(payload)
+        if rows and not ctx["muted"]:
+            title, message = setup_text(rows, self._conflicts(spec, ctx))
+            event(conn, "alert:" + rows[0]["alert_key"], "trade_alert", "success", title, message, ctx["now"])
+        return kind, last_id
+
+    def _update(self, conn, spec, core, signal, ctx):
+        """TPSL follow-ups (fill, breakeven, 21:00) for a setup that was notified."""
+        kind = signal["type"]
+        notify = (ctx["live"] and ctx["fresh"] and core.alerted and spec.id in ctx["selected"] and not ctx["muted"])
+        if kind == "expire":
+            core.alerted = False
+        if not notify:
+            return None, None
+        d, symbol, label = ctx["snapshot"].digits, ctx["snapshot"].broker_symbol, spec.label
+        offset = ctx["snapshot"].observed_utc_offset_s
+        close_at = local_time(core.day * 86400 + core.p.close_h * 3600 - offset) if core.day is not None else "—"
+        if kind == "fill":
+            side, risk = signal["side"], abs(float(signal["level"]) - float(signal["sl"]))
+            title = f"{label}: {side_name(side)} Stop ถูกชน · {symbol}"
+            parts = [f"ยกเลิก {side_name(s)} Stop ที่ค้างอยู่" for s in signal["cancelled"]]
+            parts.append(f"SL {price(signal['sl'], d)} · TP {price(signal['tp'], d)}")
+            if core.p.breakeven_r:
+                be = float(signal["level"]) + (1 if side == "BUY" else -1) * core.p.breakeven_r * risk
+                parts.append(f"เลื่อน SL เป็นทุนเมื่อราคาถึง {price(round(be, d), d)} (+{core.p.breakeven_r:g}R)")
+            parts.append(f"ปิดเวลา {close_at}")
+            message = " · ".join(parts) + "\nตรวจจากแท่ง M5 ที่ปิดแล้ว ราคาที่คุณได้จริงอาจต่างไป"
+        elif kind == "breakeven":
+            title = f"{label}: เลื่อน SL เป็นทุน · {symbol}"
+            message = (f"ไม้ {signal['side']} ได้ +{core.p.breakeven_r:g}R แล้ว · ย้าย SL ไปที่ {price(signal['sl'], d)}"
+                       f" · TP {price(signal['tp'], d)} เท่าเดิม")
+        else:
+            if not (signal["had_orders"] or signal["had_position"]):
+                return None, None
+            title = f"{label}: ถึงเวลา {close_at} · {symbol}"
+            message = " · ".join(([f"ปิดไม้ที่ยังเปิดอยู่"] if signal["had_position"] else [])
+                                 + (["ยกเลิก Buy/Sell Stop ที่ยังค้าง"] if signal["had_orders"] else []))
+        event(conn, f"update:{spec.id}:{kind}:{ctx['close_utc_s']}", "trade_update", "info", title, message, ctx["now"])
+        return None, None
+
+    def _limit(self, side, entry, atr):
+        drift = Decimal(str(atr)) * self.policy.max_entry_drift_atr
+        return tick_round(entry + drift if side == "BUY" else entry - drift, self.risk.price_tick)
+
+    def _payload(self, spec, core, signal, side, entry, stop, target, reasons, values, ctx):
+        snapshot, bar, close_utc_s = ctx["snapshot"], ctx["bar"], ctx["close_utc_s"]
+        version, atr = spec.strategy_version, Decimal(str(signal["atr"]))
+        bars = spec.time_stop_bars
+        indicators = core.indicators()
+        if signal.get("rsi2_previous") is not None:
+            indicators["rsi2_previous"] = signal["rsi2_previous"]
         return {"alert_key": f"XM:XAUUSD:5:{close_utc_s * 1000}:{side}:{version}", "side": side,
-                "strategy": self.policy.strategy, "strategy_version": version, "config_sha256": self.config_hash,
+                "strategy_id": spec.id, "strategy_label": spec.label,
+                "strategy": spec.strategy, "strategy_version": version, "config_sha256": self.config_hash,
+                "order_type": "market",
                 "source_server": snapshot.server, "source_symbol": snapshot.broker_symbol, "digits": snapshot.digits,
                 "bar_open_server_s": bar["open_server_s"], "bar_close_utc_s": close_utc_s,
                 "entry": format(entry, "f"), "sl": format(stop, "f"), "tp": format(target, "f"),
-                "entry_limit": format(limit, "f"), "atr": float(atr),
+                "atr": float(atr),
                 "net_reward_risk": format(values["net_reward_risk"].quantize(Decimal("0.0001")), "f"),
                 "stop_atr": format(values["stop_atr"].quantize(Decimal("0.0001")), "f"),
                 "spread_atr": format(values["spread_atr"].quantize(Decimal("0.0001")), "f"),
                 "spread_price_used": format(values["spread_price_used"], "f"),
                 "reason_codes": reasons,
                 "valid_until_utc_s": close_utc_s + self.risk.max_signal_age_seconds,
-                "time_stop_utc_s": close_utc_s + self.policy.time_stop_bars * 300,
+                "time_stop_utc_s": None if bars is None else close_utc_s + bars * 300,
                 "quote": {"bid": snapshot.quote.bid, "ask": snapshot.quote.ask, "time_server_ms": snapshot.quote.time_server_ms},
-                "indicators": {**core.indicators(), "rsi2_previous": signal.get("rsi2_previous")},
+                "indicators": indicators,
                 "bar": {k: bar[k] for k in ("open", "high", "low", "close", "spread_points")},
                 "snapshot_sha256": hashlib.sha256(snapshot.model_dump_json().encode()).hexdigest(),
                 "not_checked": ["fill_price", "fill_time_spread", "broker_contract_specifications", "account_equity"]}

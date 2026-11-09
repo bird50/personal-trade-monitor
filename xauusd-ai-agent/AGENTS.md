@@ -4,13 +4,13 @@ Applies to this directory and its descendants. Use Thai for user-facing explanat
 
 ## Project context
 
-This is a local Mac research system. The active service is alert-only: **XM Demo → MT5 EA → Python RSI(2) strategy → Risk level checks → XM Control/macOS notifications** (no AI, no Paper account, no orders; see [ALERTS.md](ALERTS.md)). The previous **LM Studio/Codex → Risk → Paper Trading** service remains in the code but is not started by XM Control. The supported execution scope is alerts and Python paper simulation. Do not introduce broker order execution or enable real-account trading as an incidental change.
+This is a local Mac research system. The active service is alert-only: **XM Demo → MT5 EA → Python strategies selected in XM Control (RSI(2), CCI, Heikin-Ashi, TPSL London breakout) → Risk level checks → XM Control/macOS/Telegram notifications** (no AI, no Paper account, no orders; see [ALERTS.md](ALERTS.md)). The previous **LM Studio/Codex → Risk → Paper Trading** service remains in the code but is not started by XM Control. The supported execution scope is alerts and Python paper simulation. Do not introduce broker order execution or enable real-account trading as an incidental change.
 
 Start with [README.md](README.md). Read the relevant guide for the area being changed:
 
 | Area | Source | Guide |
 | --- | --- | --- |
-| Trade alerts (active service) | `app/alert_engine.py`, `app/alert_main.py`, `config/alert-xm.json`, `scripts/check_alert_parity.py` | [ALERTS.md](ALERTS.md) |
+| Trade alerts (active service) | `app/alert_engine.py`, `app/alert_strategies.py`, `app/alert_main.py`, `config/alert-xm.json`, `scripts/check_alert_parity.py` | [ALERTS.md](ALERTS.md) |
 | Market snapshots and ordered ticks | `app/mt5_bridge.py`, `app/tick_feed.py`, `mt5/` | [MT5.md](MT5.md), [PAPER.md](PAPER.md) |
 | Previous XM candidates and checkpoints | `app/xm_engine.py`, `app/xm_main.py`, `app/structure.py` | [XM-SIGNALS.md](XM-SIGNALS.md) |
 | AI providers, validation and jobs | `app/ai_analyzer.py`, `app/codex_analyzer.py`, `app/ai_providers.py`, `app/worker.py` | [AI.md](AI.md), [CODEX.md](CODEX.md) |

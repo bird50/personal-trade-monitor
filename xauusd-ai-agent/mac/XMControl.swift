@@ -213,6 +213,11 @@ final class Controller: NSObject, NSApplicationDelegate, WKScriptMessageHandlerW
         case "start", "stop", "status": runService(action) { replyHandler($0, nil) }
         case "telegramTest":
             request("/telegram/test", post: true, acceptConflict: true) { result in replyHandler(result ?? ["error": "ส่งคำขอทดสอบ Telegram ไม่สำเร็จ กรุณาตรวจบริการ"], nil) }
+        case "strategies":
+            guard let ids = body["enabled"] as? [String], !ids.isEmpty, ids.count <= 8,
+                  ids.allSatisfy({ $0.range(of: "^[a-z][a-z0-9_]{0,15}$", options: .regularExpression) != nil })
+            else { replyHandler(nil, "Invalid request"); return }
+            request("/strategies", json: ["enabled": ids], acceptConflict: true) { result in replyHandler(result ?? ["error": "บันทึกการเลือกกลยุทธ์ไม่สำเร็จ กรุณาตรวจบริการ"], nil) }
         case "telegramCommands":
             guard let enabled = body["enabled"] as? Bool else { replyHandler(nil, "Invalid request"); return }
             request("/telegram/commands", json: ["enabled": enabled], acceptConflict: true) { result in replyHandler(result ?? ["error": "บันทึกการตั้งค่าคำสั่ง Telegram ไม่สำเร็จ กรุณาตรวจบริการ"], nil) }

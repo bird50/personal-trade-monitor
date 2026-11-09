@@ -1,7 +1,7 @@
 {
   "version": "telegram-v1",
   "enabled": true,
-  "events": ["trade_alert", "health_down", "health_recovered", "engine_reset"],
+  "events": ["trade_alert", "trade_update", "health_down", "health_recovered", "engine_reset"],
   "send_expired_alerts": false,
   "timeout_seconds": 5,
   "max_attempts": 8,

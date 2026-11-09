@@ -36,7 +36,8 @@ TELEGRAM_CONFIG = ROOT / "config/telegram.json"
 API_BASE = "https://api.telegram.org"
 TOKEN_RE = re.compile(r"^\d{5,20}:[A-Za-z0-9_-]{30,100}$")
 CHAT_RE = re.compile(r"^(-?\d{1,20}|@[A-Za-z][A-Za-z0-9_]{4,31})$")
-EVENT_KINDS = ("trade_alert", "health_down", "health_recovered", "engine_reset", "alerts_muted", "alerts_unmuted")
+EVENT_KINDS = ("trade_alert", "trade_update", "health_down", "health_recovered", "engine_reset", "alerts_muted",
+               "alerts_unmuted", "strategies_changed")
 MAX_TEXT = 4000
 log = logging.getLogger("uvicorn.error")
 
@@ -96,11 +97,15 @@ def set_meta(conn, key, value):
 
 def message_text(row, payload=None) -> str:
     if row["kind"] == "trade_alert":
-        icon = "📈" if (payload or {}).get("side") == "BUY" else "📉" if (payload or {}).get("side") == "SELL" else "🔔"
+        payload = payload or {}
+        icon = ("🎯" if payload.get("order_type") in ("buy_stop", "sell_stop") else
+                "📈" if payload.get("side") == "BUY" else "📉" if payload.get("side") == "SELL" else "🔔")
+    elif row["kind"] == "trade_update":
+        icon = "🔁"
     else:
         icon = {"warning": "⚠️", "success": "✅"}.get(row["level"], "ℹ️")
     text = f"{icon} {row['title']}\n{row['message']}"
-    if row["kind"] == "trade_alert":
+    if row["kind"] in ("trade_alert", "trade_update"):
         text += "\nXM Control แจ้งเตือนเท่านั้น ไม่ได้ส่งคำสั่งซื้อขาย"
     return text[:MAX_TEXT]
 
