@@ -264,6 +264,30 @@ def test_frozen_costs_close_existing_position_after_policy_change(rig):
     assert D(rig['paper'].summary()['balance_usd'])==D('10038.3040')
 
 
+def test_adopt_policy_is_explicit_audited_and_refused_with_open_position(rig):
+    original=rig['paper'].policy_hash
+    approve(rig);step(rig,[(3,2500,2500.2)])
+    policy=PaperPolicy.model_validate({**rig['policy'].model_dump(),'max_positions':2})
+    revised=PaperEngine(rig['db'],policy,rig['risk'],now=rig['base']+4)
+    with pytest.raises(ValueError,match='reason'):
+        revised.adopt_policy(' ')
+    with pytest.raises(ValueError,match='open positions'):
+        revised.adopt_policy('raise position limit')
+    assert revised.summary()['policy_matches'] is False
+    rig['paper']=revised
+    step(rig,[(5,2510,2510.2)])
+    before,ledger=revised.summary(),revised.ledger()
+    result=revised.adopt_policy('raise position limit',now=rig['base']+10)
+    assert result=={'changed':True,'previous_hash':original,'policy_hash':revised.policy_hash}
+    after=revised.summary()
+    assert after['policy_matches'] is True and after['balance_usd']==before['balance_usd']
+    assert revised.ledger()==ledger and len(revised.positions('closed'))==1
+    with rig['db'].connect() as db:
+        rows=[tuple(r) for r in db.execute('SELECT previous_hash,new_hash,reason FROM paper_policy_history')]
+    assert rows==[(original,revised.policy_hash,'raise position limit')]
+    assert revised.adopt_policy('again')=={'changed':False,'policy_hash':revised.policy_hash}
+
+
 def test_recovered_old_ticks_can_close_but_cannot_open(rig):
     approve(rig);step(rig,[(3,2500,2500.2)])
     _,now=feed(rig,[(4,2494.9,2495.1),(5,2500,2500.2)])

@@ -1,0 +1,64 @@
+{
+  "base": {
+    "kc_mult": 1.5,
+    "h1_filter": true,
+    "min_squeeze": 9,
+    "window_bars": 3,
+    "blackout_hours": [
+      13,
+      15
+    ]
+  },
+  "axes": {
+    "rr": [
+      1.4,
+      1.6,
+      2.0,
+      2.5
+    ],
+    "exits": [
+      {
+        "label": "be0.5_t36",
+        "value": {
+          "breakeven_r": 0.5,
+          "breakeven_lock_r": 0.1,
+          "time_stop_bars": 36
+        }
+      },
+      {
+        "label": "nobe_t36",
+        "value": {
+          "breakeven_r": null,
+          "breakeven_lock_r": null,
+          "time_stop_bars": 36
+        }
+      },
+      {
+        "label": "nobe_t72",
+        "value": {
+          "breakeven_r": null,
+          "breakeven_lock_r": null,
+          "time_stop_bars": 72
+        }
+      },
+      {
+        "label": "be1.0_t72",
+        "value": {
+          "breakeven_r": 1.0,
+          "breakeven_lock_r": 0.2,
+          "time_stop_bars": 72
+        }
+      },
+      {
+        "label": "trail1.0/0.8_t72",
+        "value": {
+          "breakeven_r": null,
+          "breakeven_lock_r": null,
+          "trail_start_r": 1.0,
+          "trail_r": 0.8,
+          "time_stop_bars": 72
+        }
+      }
+    ]
+  }
+}

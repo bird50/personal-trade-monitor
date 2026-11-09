@@ -35,7 +35,7 @@ final class Controller: NSObject, NSApplicationDelegate, WKScriptMessageHandlerW
         web.navigationDelegate = self
         web.setValue(false, forKey: "drawsBackground")
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 860), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.title = "XM Control · Paper Trading"
+        window.title = "XM Control · Trade Alerts"
         window.minSize = NSSize(width: 1080, height: 740)
         window.appearance = NSAppearance(named: .darkAqua)
         window.contentView = web
@@ -82,23 +82,21 @@ final class Controller: NSObject, NSApplicationDelegate, WKScriptMessageHandlerW
         decisionHandler(allowed ? .allow : .cancel)
     }
 
-    func request(_ path: String, paused: Bool? = nil, provider: String? = nil, completion: @escaping ([String: Any]?) -> Void) {
+    func request(_ path: String, json: [String: Any]? = nil, post: Bool = false, acceptConflict: Bool = false, completion: @escaping ([String: Any]?) -> Void) {
         guard !token.isEmpty, let url = URL(string: "http://127.0.0.1:8002" + path) else { completion(nil); return }
         var req = URLRequest(url: url, timeoutInterval: 4)
         req.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
-        if let paused = paused {
+        if let json = json {
             req.httpMethod = "POST"
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            req.httpBody = try? JSONSerialization.data(withJSONObject: ["paused": paused])
-        }
-        if let provider = provider {
+            req.httpBody = try? JSONSerialization.data(withJSONObject: json)
+        } else if post {
             req.httpMethod = "POST"
-            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            req.httpBody = try? JSONSerialization.data(withJSONObject: ["provider": provider])
         }
         URLSession.shared.dataTask(with: req) { data, response, _ in
             var result: [String: Any]?
-            if (response as? HTTPURLResponse)?.statusCode == 200, let data = data { result = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] }
+            let code = (response as? HTTPURLResponse)?.statusCode
+            if code == 200 || (acceptConflict && code == 409), let data = data { result = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] }
             DispatchQueue.main.async { completion(result) }
         }.resume()
     }
@@ -150,14 +148,10 @@ final class Controller: NSObject, NSApplicationDelegate, WKScriptMessageHandlerW
             self.failures = 0
             if self.offlineIncident {
                 self.offlineIncident = false
-                self.sendNotice(id: UUID().uuidString, title: "บริการกลับมาทำงานแล้ว", message: "เชื่อมต่อระบบ Paper Trading ได้อีกครั้ง")
+                self.sendNotice(id: UUID().uuidString, title: "บริการกลับมาทำงานแล้ว", message: "เชื่อมต่อระบบแจ้งเตือนสัญญาณได้อีกครั้ง")
             }
-            let account = state["account"] as? [String: Any] ?? [:]
-            let feed = state["feed"] as? [String: Any] ?? [:]
-            let model = state["ai"] as? [String: Any] ?? [:]
-            let workers = state["workers"] as? [String: Bool] ?? [:]
-            let aiReady = model["ready"] as? Bool ?? (model["available"] as? Bool == true && model["model_loaded"] as? Bool == true)
-            let ready = account["entries_enabled"] as? Bool == true && feed["available"] as? Bool == true && aiReady && workers.count == 3 && workers.values.allSatisfy { $0 }
+            // The service decides readiness: fresh MT5 feed, warmed-up strategy and running workers.
+            let ready = state["mode"] as? String == "alert_only" && state["ready"] as? Bool == true
             self.menuItem.button?.title = ready ? "◈ XM · ●" : "◈ XM · !"
             let events = state["events"] as? [[String: Any]] ?? []
             if self.defaults.bool(forKey: "eventBaseline") {
@@ -215,11 +209,18 @@ final class Controller: NSObject, NSApplicationDelegate, WKScriptMessageHandlerW
             }
         case "pause":
             guard let paused = body["paused"] as? Bool else { replyHandler(nil, "Invalid request"); return }
-            request("/dashboard/pause", paused: paused) { result in replyHandler(result ?? ["error": "เชื่อมต่อบริการไม่ได้"], nil) }
-        case "provider":
-            guard let provider = body["provider"] as? String, ["lm_studio", "codex"].contains(provider) else { replyHandler(nil, "Invalid provider"); return }
-            request("/dashboard/ai-provider", provider: provider) { result in replyHandler(result ?? ["error": "เปลี่ยน AI ไม่สำเร็จ กรุณาตรวจบริการ"], nil) }
+            request("/dashboard/pause", json: ["paused": paused]) { result in replyHandler(result ?? ["error": "บันทึกการปิดเสียงไม่สำเร็จ กรุณาตรวจบริการ"], nil) }
         case "start", "stop", "status": runService(action) { replyHandler($0, nil) }
+        case "telegramTest":
+            request("/telegram/test", post: true, acceptConflict: true) { result in replyHandler(result ?? ["error": "ส่งคำขอทดสอบ Telegram ไม่สำเร็จ กรุณาตรวจบริการ"], nil) }
+        case "strategies":
+            guard let ids = body["enabled"] as? [String], !ids.isEmpty, ids.count <= 8,
+                  ids.allSatisfy({ $0.range(of: "^[a-z][a-z0-9_]{0,15}$", options: .regularExpression) != nil })
+            else { replyHandler(nil, "Invalid request"); return }
+            request("/strategies", json: ["enabled": ids], acceptConflict: true) { result in replyHandler(result ?? ["error": "บันทึกการเลือกกลยุทธ์ไม่สำเร็จ กรุณาตรวจบริการ"], nil) }
+        case "telegramCommands":
+            guard let enabled = body["enabled"] as? Bool else { replyHandler(nil, "Invalid request"); return }
+            request("/telegram/commands", json: ["enabled": enabled], acceptConflict: true) { result in replyHandler(result ?? ["error": "บันทึกการตั้งค่าคำสั่ง Telegram ไม่สำเร็จ กรุณาตรวจบริการ"], nil) }
         case "notifications":
             notices.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in
                 self.notificationState { replyHandler(["notifications": $0], nil) }
@@ -227,7 +228,7 @@ final class Controller: NSObject, NSApplicationDelegate, WKScriptMessageHandlerW
         case "testNotification":
             notificationState { permission in
                 guard permission == "enabled" else { replyHandler(["notifications": permission, "sent": false], nil); return }
-                self.sendNotice(id: UUID().uuidString, title: "ทดสอบการแจ้งเตือน", message: "พร้อมแจ้งผล AI และการเปิด–ปิดสถานะจำลอง ขณะ XM Control เปิดอยู่") { sent in
+                self.sendNotice(id: UUID().uuidString, title: "ทดสอบการแจ้งเตือน", message: "พร้อมแจ้งจังหวะเข้า trade ขณะ XM Control เปิดอยู่") { sent in
                     replyHandler(["notifications": permission, "sent": sent], nil)
                 }
             }

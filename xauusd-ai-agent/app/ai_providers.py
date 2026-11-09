@@ -3,9 +3,10 @@ import time
 
 from .ai_analyzer import AIAnalyzer,AnalysisError
 from .codex_analyzer import CodexAnalyzer
+from .bypass import BypassAnalyzer,BypassStore
 
 PROVIDERS=('lm_studio','codex')
-LABELS={'lm_studio':'LM Studio','codex':'Codex'}
+LABELS={'lm_studio':'LM Studio','codex':'Codex','bypass':'ยกเว้น AI'}
 
 
 class AIProviderStore:
@@ -70,7 +71,15 @@ class ProviderAnalyzer:
     def __init__(self,db,settings,client):
         self.store=AIProviderStore(db,settings)
         self.analyzers={'lm_studio':AIAnalyzer(settings,client),'codex':CodexAnalyzer(settings)}
+        self.bypass=BypassStore(db)
 
     def choose(self):
+        return self.route()[:3]
+
+    def route(self):
+        """Pin provider, model and waivers together when a job is claimed."""
+        bypass=self.bypass.get()
+        if bypass['ai']:
+            return 'bypass','none',BypassAnalyzer(),bypass
         choice=self.store.get();provider=choice['provider'];model=choice['model']
-        return provider,model,TrackedAnalyzer(self.analyzers[provider],self.store,provider,model)
+        return provider,model,TrackedAnalyzer(self.analyzers[provider],self.store,provider,model),bypass

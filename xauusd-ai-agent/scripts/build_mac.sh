@@ -2,8 +2,10 @@
 set -eu
 cd "$(dirname "$0")/.."
 APP="mac/build/XM Control.app"
+# Recreate bundled dashboard assets so removed files do not linger in the app.
+rm -rf "$APP/Contents/Resources/dashboard"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/dashboard" mac/.module-cache
-cp dashboard/index.html dashboard/style.css dashboard/provider.css dashboard/app.js "$APP/Contents/Resources/dashboard/"
+cp dashboard/index.html dashboard/style.css dashboard/alerts.css dashboard/app.js "$APP/Contents/Resources/dashboard/"
 .venv/bin/python -c 'import json,pathlib; pathlib.Path("mac/build/XM Control.app/Contents/Resources/project.json").write_text(json.dumps({"root":str(pathlib.Path.cwd())}))'
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

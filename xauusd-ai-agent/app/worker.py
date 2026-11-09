@@ -22,9 +22,9 @@ class AnalysisWorker:
 
     async def process_once(self):
         config = self.settings
-        provider,model,analyzer='lm_studio',config.lm_studio_model,self.analyzer
+        provider,model,analyzer,bypass='lm_studio',config.lm_studio_model,self.analyzer,None
         if isinstance(self.analyzer,ProviderAnalyzer):
-            provider,model,analyzer=await run_in_threadpool(self.analyzer.choose)
+            provider,model,analyzer,bypass=await run_in_threadpool(self.analyzer.route)
         job = await run_in_threadpool(self.db.claim_analysis, model, PROMPT_VERSION,
                                      config.ai_timeout_seconds, config.ai_max_attempts, config.ai_max_signal_age_seconds,provider)
         if job is None:
@@ -33,7 +33,7 @@ class AnalysisWorker:
         try:
             signal = Signal.model_validate(job["payload"])
             result = (await analyzer.analyze(signal)).model_dump()
-            risk = self.risk_manager.evaluate(signal, result)
+            risk = self.risk_manager.evaluate(signal, result, bypass=bypass)
         except AnalysisError as exc:
             error = exc.code
             status = "pending" if exc.retryable and job["attempt"] < config.ai_max_attempts else "failed"

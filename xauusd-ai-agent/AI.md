@@ -1,5 +1,7 @@
 # เชื่อม LM Studio
 
+> **โหมดเดิม:** ตั้งแต่ 8 พฤศจิกายน 2026 บริการที่ XM Control เปิดคือโหมดแจ้งเตือนอย่างเดียว ([ALERTS.md](ALERTS.md)) ซึ่งไม่ใช้AI เนื้อหาด้านล่างใช้กับบริการเดิม `sh scripts/run_xm_paper.sh`
+
 ระบบรองรับตัวเลือก **Codex ผ่านบัญชี ChatGPT** เพิ่มเติมแล้ว เปลี่ยนจากแถบผู้วิเคราะห์ AI ใน XM Control ดู [CODEX.md](CODEX.md) รายละเอียดด้านล่างเป็นการตั้งค่า LM Studio
 
 เชื่อมผ่าน `http://172.17.185.101:1234/v1/chat/completions` ใช้โมเดล `qwen/qwen3.8-27b` ตามเซิร์ฟเวอร์ที่ผู้ใช้ระบุ ไม่ใช้ AI API แบบคิดเงิน และไม่ส่งข้อมูลไปยังผู้ให้บริการอื่น
@@ -13,6 +15,8 @@
 5. ตรวจ final content ของโมเดล แล้วตรวจ [Risk Manager](RISK.md) และเก็บผล JSON, model, prompt version, จำนวนครั้งและรายงานความเสี่ยงใน SQLite พร้อมกัน
 
 ใช้ `prompts/trading_analysis.txt` และ request version `signal-filter-v4` กับ structured output ตาม [LM Studio documentation](https://beta.lmstudio.ai/docs/developer/openai-compat/structured-output) คงคำอธิบายแหล่งข้อมูล XM และเวลา context แบบ broker server wall clock จาก v3 รุ่น v4 กำหนด `reasoning_effort=none` ตาม configuration สำหรับเซิร์ฟเวอร์ที่ทดสอบแล้ว ดู [ระบบสัญญาณ XM](XM-SIGNALS.md)
+
+เมื่อเปิดโหมด **ยกเว้น AI** worker จะไม่เรียก LM Studio หรือ Codex และไม่ใช้ `confirmation_blockers` ผลจะเป็นฝั่งของสัญญาณ บันทึก `provider=bypass` และ `model=none` จากนั้นยังผ่านขั้นตอน Risk และอายุสัญญาณตามปกติ ดู [RISK.md](RISK.md#โหมดยกเว้น-ai-และ-risk-manager)
 
 ผลต้องมี `decision`, `entry`, `sl`, `tp`, `risk_reward` และ `reasons` โมเดลห้ามกลับฝั่งสัญญาณ ห้ามเปลี่ยนราคา/RR ห้ามส่ง tool calls หรือข้อมูลที่ขาดโครงสร้าง ไม่ใช้ `reasoning_content` เป็นผลลัพธ์และไม่เก็บข้อความ reasoning
 

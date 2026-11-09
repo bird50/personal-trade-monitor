@@ -1,78 +1,194 @@
 'use strict';
 const $ = id => document.getElementById(id);
-let state = null, selectedTab = 'open', busy = false, providerBusy=false, refreshing = false, toastTimer;
-const money = value => value == null ? '—' : Number(value).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-const num = value => value == null ? '—' : Number(value).toLocaleString('en-US',{maximumFractionDigits:3});
-const time = seconds => !seconds ? '—' : new Date(seconds*1000).toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
-const duration = seconds => {const s=Math.max(0,Math.round(seconds||0));return s>=3600?`${Math.floor(s/3600)} ชม. ${Math.floor(s%3600/60)} นาที`:s>=60?`${Math.floor(s/60)} นาที ${s%60} วินาที`:`${s} วินาที`};
-const esc = value => String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-function text(id,value){$(id).textContent=value}
-function dot(id,ok){$(id).className='dot '+(ok?'green':'amber')}
-function signed(id,value){text(id,(Number(value)>0?'+':'')+money(value));$(id).classList.toggle('positive',Number(value)>0);$(id).classList.toggle('negative',Number(value)<0)}
-function toast(message){text('toast',message);$('toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('show'),6500)}
-async function bridge(action,extra={}){if(!window.webkit?.messageHandlers?.control)throw Error('เปิดหน้านี้ผ่านแอป XM Control');return window.webkit.messageHandlers.control.postMessage({action,...extra})}
-async function refresh(){if(refreshing)return;refreshing=true;try{state=await bridge('state');render()}catch(e){state={connected:false};render()}finally{refreshing=false}}
-function render(){
- const connected=state?.connected===true;
- $('pause').disabled=!connected||busy;
- $('providerLm').disabled=!connected||providerBusy;$('providerCodex').disabled=!connected||providerBusy;
- dot('systemDot',connected);
- text('lastUpdate',connected?'อัปเดต '+time(state.checked_at)+' · รีเฟรชทุก 5 วินาที':'ไม่พบระบบที่ 127.0.0.1:8002');
- const ns=state?.notifications;
- text('noticeStatus',ns==='enabled'?'เปิดใช้งานแล้ว':ns==='denied'?'ยังไม่ได้รับอนุญาต':'ยังไม่ได้เปิดใช้งาน');
- text('enableNotice',ns==='enabled'?'ทดสอบการแจ้งเตือน ↗':ns==='denied'?'ดูวิธีเปิดการแจ้งเตือน ↗':'เปิดการแจ้งเตือน ↗');dot('noticeDot',ns==='enabled');
- if(!connected){
-  text('systemTitle','บริการในเครื่องยังไม่พร้อม');$('errorBanner').classList.remove('hidden');text('errorBanner','กด “เริ่มบริการ” เพื่อเปิดตัวรับราคาและระบบ Paper Trading หรือดู log ในโฟลเดอร์ .runtime หากเริ่มไม่สำเร็จ');
-  ['feedStatus','aiStatus','paperStatus'].forEach(id=>text(id,'ไม่มีข้อมูลปัจจุบัน'));['feedDot','aiDot','paperDot'].forEach(id=>dot(id,false));
-  ['feedDetail','aiDetail','paperDetail'].forEach(id=>text(id,'รอเชื่อมต่อบริการอีกครั้ง'));text('entryStatus','สถานะการเปิดไม้ยังไม่ยืนยัน · บริการออฟไลน์');
-  text('valuation','ข้อมูลบัญชีรอเชื่อมต่ออีกครั้ง');return;
- }
- const a=state.account,f=state.feed,ai=state.ai,t=state.ticks||{};
- const selection=state.ai_selection||{provider:'lm_studio',label:'LM Studio',model:state.model};
- const codex=selection.provider==='codex',aiReady=ai.ready??(ai.available&&ai.model_loaded);
- const codexIssue={codex_cli_unavailable:'ไม่พบ Codex CLI ในเครื่อง ตรวจการติดตั้ง',codex_usage_limit:'ถึงขีดจำกัดการใช้ Codex รอรีเซ็ตโควตาหรือเลือก LM Studio',codex_model_unavailable:'บัญชีนี้ยังเรียกโมเดล Codex ที่ตั้งไว้ไม่ได้'}[ai.error]||'Codex ยังไม่พร้อม กรุณาใช้ codex login ด้วยบัญชี ChatGPT ใน Terminal';
- for(const [id,provider] of [['providerLm','lm_studio'],['providerCodex','codex']]){const chosen=selection.provider===provider;$(id).classList.toggle('selected',chosen);$(id).setAttribute('aria-pressed',String(chosen))}
- text('providerModel',selection.label+' · '+selection.model);
- const active=selection.in_flight;
- text('providerUsage',active?`กำลังวิเคราะห์ #${active.signal_record_id} ด้วย ${active.provider==='codex'?'Codex':'LM Studio'}`:codex?'ใช้โควตา Codex · ส่งสัญญาณไป OpenAI':'ประมวลผลผ่าน LM Studio ตามที่ตั้งไว้');
- text('pipeline',`◈  XM → Python → ${selection.label} → Risk → Paper`);
- $('aiStatus').parentElement.querySelector('small').textContent=codex?'CODEX · CHATGPT':'LM STUDIO';
- const recovering=!a.valuation_fresh&&t.status==='catching_up';
- const workers=Object.values(state.workers).every(Boolean),ready=a.entries_enabled&&f.available&&aiReady&&workers;
- dot('systemDot',ready);text('systemTitle',a.operator_paused?'พักการเปิดไม้ใหม่ · ติดตามไม้เดิมต่อ':ready?'ระบบพร้อม · รอสัญญาณเข้าเงื่อนไข':'ระบบทำงาน · มีเงื่อนไขที่ต้องตรวจสอบ');
- const warning=!f.available?'ราคาจาก MT5 ยังไม่สด ตรวจการเชื่อมต่อ XM และ EA ทั้งสองตัว':!aiReady?(codex?codexIssue:'LM Studio ยังไม่พร้อม ตรวจ Server และโมเดลที่ตั้งไว้'):recovering?`กำลังรับ Tick ย้อนหลัง · ตามหลัง ${duration(t.coverage_age_seconds)} · EA ยังส่งข้อมูลอยู่ รอให้ตามทันก่อนเปิดไม้ใหม่`:!a.valuation_fresh?'ยังไม่มี Tick สดสำหรับประเมินบัญชี ตรวจ EA XMPaperTicks':!workers?'มี worker หยุดทำงาน กรุณาตรวจ log':!a.policy_matches?'กฎบัญชีเปลี่ยน ระบบระงับการเปิดสถานะใหม่':a.day?.locked?'ถึงเพดานขาดทุนรายวัน ระบบติดตามไม้เดิมต่อ':'';
- $('errorBanner').classList.toggle('hidden',!warning);text('errorBanner',warning);
- text('pause',a.operator_paused?'▶ เปิดรับไม้ใหม่':'Ⅱ พักเปิดไม้ใหม่');
- text('feedStatus',f.available?'รับราคาสด':'ราคาไม่พร้อม');dot('feedDot',f.available);text('feedDetail',f.bid!=null?`${f.symbol} ${num(f.bid)} / ${num(f.ask)} · ${Math.round(f.age_seconds)}s`:'รอ EA XMPriceBridge');
- text('aiStatus',codex?(aiReady?'ล็อกอินพร้อมเรียกวิเคราะห์':'ยังไม่พร้อมใช้งาน'):aiReady?'โมเดลพร้อมใช้งาน':ai.available?'ไม่พบโมเดลที่ตั้งไว้':'เชื่อมต่อไม่ได้');dot('aiDot',aiReady);text('aiDetail',state.model);
- text('paperStatus',a.valuation_fresh?'ติดตาม Tick สด':recovering?'กำลังรับ Tick ย้อนหลัง':'รอ Tick / ตรวจข้อมูล');dot('paperDot',a.valuation_fresh);text('paperDetail',recovering?'ตามหลัง '+duration(t.coverage_age_seconds):a.status+(a.mark_age_seconds!=null?' · '+Math.round(a.mark_age_seconds)+'s':''));
- text('equity',money(a.equity_usd));text('balance',money(a.balance_usd));signed('floating',a.unrealized_pnl_usd);signed('realized',a.realized_cash_pnl_usd);
- text('valuation',a.valuation_fresh?'มูลค่าบัญชี ณ Tick ล่าสุด':'มูลค่าจาก Tick เดิม · ราคายังไม่สด');text('openCount',`${a.open_positions} สถานะเปิด · Risk $${money(a.open_planned_risk_usd)}`);text('closedCount',`${a.closed_trades} เทรดปิด · รวมค่าธรรมเนียมที่บันทึกแล้ว`);
- text('risk',state.policy.risk_percent+'%');text('dailyRisk',state.policy.daily_loss_percent+'%');text('maxPositions',state.policy.max_positions+' สถานะ');text('entryStatus',a.operator_paused?'Ⅱ พักการเปิดไม้ใหม่ตามคำสั่งผู้ใช้':a.entries_enabled?'● ผ่านเงื่อนไขบัญชี · รอ AI / Risk ต่อสัญญาณ':'● ยังไม่ผ่านเงื่อนไขบัญชี');
- renderChart(state.equity_history);renderPositions();renderAnalysis();renderEvents();
+let state = null, busy = false, refreshing = false, toastTimer;
+const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+const time = seconds => !seconds ? '—' : new Date(seconds * 1000).toLocaleTimeString('th-TH', {hour: '2-digit', minute: '2-digit'});
+const stamp = seconds => !seconds ? '—' : new Date(seconds * 1000).toLocaleDateString('th-TH', {day: 'numeric', month: 'short'}) + ' · ' + time(seconds);
+const price = (value, digits = 2) => value == null ? '—' : Number(value).toLocaleString('en-US', {minimumFractionDigits: digits, maximumFractionDigits: digits});
+const fixed = (value, digits = 1) => value == null ? '—' : Number(value).toFixed(digits);
+function text(id, value) { $(id).textContent = value }
+function dot(id, ok, warn) { $(id).className = 'dot ' + (ok ? 'green' : warn ? 'red' : 'amber') }
+function toast(message) { text('toast', message); $('toast').classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.remove('show'), 6500) }
+async function bridge(action, extra = {}) { if (!window.webkit?.messageHandlers?.control) throw Error('เปิดหน้านี้ผ่านแอป XM Control'); return window.webkit.messageHandlers.control.postMessage({action, ...extra}) }
+async function refresh() { if (refreshing) return; refreshing = true; try { state = await bridge('state'); render() } catch (e) { state = {connected: false}; render() } finally { refreshing = false } }
+
+const ENGINE = {
+  watching: 'เฝ้าดูตลาด', alert: 'มีสัญญาณใหม่', warming_up: 'กำลังอุ่นเครื่อง indicator', bootstrapped: 'เริ่มคำนวณจากประวัติราคา',
+  waiting_for_h1: 'รอแท่ง H1 ล่าสุด', waiting_for_feed: 'รอข้อมูลจาก MT5', feed_stale: 'ราคาจาก MT5 ไม่อัปเดต',
+  source_mismatch: 'Server หรือ symbol ไม่ตรง policy', tick_policy_mismatch: 'Tick size ไม่ตรง policy',
+  insufficient_history: 'ประวัติราคาไม่พอ', out_of_order_feed: 'ได้ข้อมูลเก่ากว่าที่คำนวณแล้ว',
+  engine_error: 'คำนวณไม่สำเร็จ', feed_database_unavailable: 'อ่านฐานข้อมูลราคาไม่ได้'};
+const ALERT = {alert: 'แจ้งแล้ว', missed: 'เลยเวลาแจ้ง', warmup: 'ระหว่างอุ่นเครื่อง', rejected: 'ไม่ผ่าน Risk'};
+const REASON = {net_reward_risk_too_low: 'RR สุทธิต่ำ', spread_atr_too_high: 'Spread สูงเทียบ ATR', stop_atr_out_of_range: 'ระยะ SL นอกช่วง',
+  price_not_on_tick: 'ราคาไม่ตรง tick', levels_inconsistent: 'ระดับราคาไม่สอดคล้อง', other_strategy_open: 'กลยุทธ์อื่นถือไม้อยู่'};
+const isStop = a => a && (a.order_type === 'buy_stop' || a.order_type === 'sell_stop');
+const stopName = side => side === 'BUY' ? 'Buy Stop' : 'Sell Stop';
+
+function render() {
+  const connected = state?.connected === true;
+  $('mute').disabled = !connected || busy;
+  const ns = state?.notifications;
+  text('noticeStatus', ns === 'enabled' ? 'เปิดใช้งานแล้ว' : ns === 'denied' ? 'ยังไม่ได้รับอนุญาต' : 'ยังไม่ได้เปิดใช้งาน');
+  text('enableNotice', ns === 'enabled' ? 'ทดสอบการแจ้งเตือน ↗' : ns === 'denied' ? 'ดูวิธีเปิดการแจ้งเตือน ↗' : 'เปิดการแจ้งเตือน ↗');
+  dot('noticeDot', ns === 'enabled');
+  const tg = state?.telegram;
+  const TG = {disabled: 'ปิดอยู่', missing_credentials: 'ยังไม่ได้ใส่ token/chat ID', invalid_bot_token: 'bot token ไม่ถูกรูปแบบ',
+    invalid_chat_id: 'chat ID ไม่ถูกรูปแบบ', failing: 'ส่งไม่สำเร็จ', ready: 'พร้อมส่ง'};
+  text('telegramStatus', !connected || !tg ? 'ไม่มีข้อมูลปัจจุบัน' : (TG[tg.state] || tg.state) + (tg.worker === false ? ' · ตัวส่งหยุด' : ''));
+  text('telegramDetail', !connected || !tg ? 'รอเชื่อมต่อบริการ' : !tg.enabled ? 'เปิดที่ config/telegram.json' : tg.last_error && tg.state === 'failing' ? tg.last_error.error
+    : `ส่งล่าสุด ${stamp(tg.last_sent_at)} · รอส่ง ${tg.pending} · ล้มเหลว ${tg.failed}`);
+  $('telegramTest').classList.toggle('hidden', !connected || !tg?.active);
+  const cmd = tg?.commands;
+  $('telegramCommands').classList.toggle('hidden', !connected || !cmd || (!tg?.active && !cmd.enabled));
+  text('telegramCommands', cmd?.enabled ? 'ปิดรับคำสั่ง /status' : 'เปิดรับคำสั่ง /status');
+  if (connected && tg?.enabled && cmd?.enabled) {
+    const CMD = {listening: 'รับคำสั่งอยู่', failing: 'รับคำสั่งไม่ได้', unavailable: 'รับคำสั่งไม่ได้ (Telegram ไม่พร้อม)'};
+    $('telegramDetail').textContent += ' · ' + (CMD[cmd.state] || cmd.state) + (cmd.state === 'failing' && cmd.last_error ? ` (${cmd.last_error.error})` : '');
+  }
+  dot('telegramDot', connected && tg?.state === 'ready' && tg?.worker !== false, connected && tg?.state === 'failing');
+  if (!connected) {
+    dot('systemDot', false); text('systemTitle', 'บริการในเครื่องยังไม่พร้อม'); text('lastUpdate', 'ไม่พบระบบที่ 127.0.0.1:8002');
+    $('errorBanner').classList.remove('hidden');
+    text('errorBanner', 'กด “เริ่มบริการ” เพื่อเปิดตัวรับราคาและระบบแจ้งเตือน หรือดู log ในโฟลเดอร์ .runtime หากเริ่มไม่สำเร็จ');
+    for (const id of ['feed', 'engine', 'setup']) { text(id + 'Status', 'ไม่มีข้อมูลปัจจุบัน'); text(id + 'Detail', 'รอเชื่อมต่อบริการอีกครั้ง'); dot(id + 'Dot', false) }
+    return;
+  }
+  $('errorBanner').classList.add('hidden');
+  const f = state.feed, e = state.engine || {}, w = e.warmup || {}, digits = f.digits ?? 2;
+  text('lastUpdate', 'อัปเดต ' + time(state.checked_at) + ' · รีเฟรชทุก 5 วินาที');
+  dot('systemDot', state.ready);
+  text('systemTitle', !state.ready ? 'ยังไม่พร้อมแจ้งเตือน · ' + (ENGINE[e.status] || e.status || 'รอข้อมูล') : state.muted ? 'ปิดเสียงแจ้งเตือนอยู่ · ยังบันทึกสัญญาณ' : 'พร้อมแจ้งเตือนจังหวะเข้า trade');
+  text('mute', state.muted ? '▶ เปิดเสียงแจ้งเตือน' : 'Ⅱ ปิดเสียงแจ้งเตือน');
+  text('feedStatus', f.available ? `Bid ${price(f.bid, digits)} · Ask ${price(f.ask, digits)}` : f.age_seconds != null ? 'ราคาไม่อัปเดต' : 'ยังไม่มีข้อมูล');
+  text('feedDetail', f.age_seconds != null ? `อายุ ${Math.round(f.age_seconds)} วินาที · M5 ${f.m5_bars} / H1 ${f.h1_bars} แท่ง` : state.receiver?.available ? 'ตัวรับราคาพร้อม รอ EA ส่งข้อมูล' : 'ตัวรับราคาที่ 8001 ไม่ตอบ');
+  dot('feedDot', f.available);
+  text('engineStatus', ENGINE[e.status] || e.status || '—');
+  text('engineDetail', w.ready ? `ข้อมูลพร้อม · แท่งล่าสุดปิด ${time(e.last_bar_close_utc_s)}` : w.h1 != null ? `อุ่นเครื่อง H1 ${w.h1}/${w.required_h1} · M5 ${w.m5}/${w.required_m5} แท่ง` : 'รอแท่งราคาแรก');
+  dot('engineDot', w.ready && ['watching', 'alert'].includes(e.status), ['engine_error', 'source_mismatch', 'tick_policy_mismatch'].includes(e.status));
+  renderSetup(e); renderLatest(digits); renderRules(); renderAlerts(); renderEvents();
 }
-function renderChart(points){
- const p=(points||[]).filter(x=>Number.isFinite(Number(x.equity)));
- $('chartEmpty').classList.toggle('hidden',p.length>0);if(!p.length){$('chartContent').innerHTML='';return}
- let lo=Math.min(...p.map(x=>Number(x.equity))),hi=Math.max(...p.map(x=>Number(x.equity)));const pad=Math.max((hi-lo)*.2,1);lo-=pad;hi+=pad;
- const x=i=>p.length===1?350:10+i/(p.length-1)*680,y=v=>145-(v-lo)/(hi-lo)*130;
- const line=p.map((v,i)=>`${i?'L':'M'}${x(i).toFixed(2)},${y(Number(v.equity)).toFixed(2)}`).join(' ');
- const area=line+` L${x(p.length-1)},155 L${x(0)},155 Z`;
- $('chartContent').innerHTML=`<path d="M0 15H700 M0 80H700 M0 145H700" fill="none" stroke="#2a3236" stroke-dasharray="3 5"/><path d="${area}" fill="url(#area)"/><path d="${line}" fill="none" stroke="#d7b978" stroke-width="2"/><circle cx="${x(p.length-1)}" cy="${y(Number(p.at(-1).equity))}" r="3" fill="#e4cd99"/>`;
- text('chartFrom',time(p[0].at));text('chartTo',time(p.at(-1).at));text('chartScale',`USD ${money(lo+pad)} – ${money(hi-pad)} · ${p.at(-1).fresh?'Tick สด ณ จุดล่าสุด':'จุดล่าสุดใช้ราคาเดิม'}`);
+
+function renderSetup(e) {
+  const all = e.strategies || {}, chosen = Object.entries(all).filter(([, s]) => s.enabled);
+  if (!chosen.length) { text('setupStatus', 'รอข้อมูล'); text('setupDetail', '—'); dot('setupDot', false); return }
+  const active = chosen.find(([, s]) => s.position || s.indicators?.phase === 'orders');
+  const [, first] = active || chosen[0];
+  text('setupStatus', chosen.length === 1 ? first.label : `ใช้ ${chosen.length} กลยุทธ์ · ${first.label}`);
+  text('setupDetail', first.summary || '—');
+  dot('setupDot', chosen.some(([, s]) => s.position || s.indicators?.bias || s.indicators?.phase === 'orders'));
 }
-function renderPositions(){if(!state?.connected)return;const rows=selectedTab==='open'?state.positions:state.closed;const items=[...rows].reverse();text('positionBadge',state.account.open_positions);$('positionsEmpty').classList.toggle('hidden',items.length>0);$('positions').innerHTML=items.map(p=>`<tr><td><b class="${p.side==='BUY'?'positive':'negative'}">${esc(p.side)}</b> <small>#${p.id} · ${time((selectedTab==='open'?p.opened_utc_ms:p.closed_utc_ms)/1000)}</small></td><td>${num(p.quantity)}</td><td>${num(p.entry)}</td><td>${num(p.sl)}<small>${num(p.tp)}</small></td><td class="right ${Number(p.net_pnl??p.unrealized_pnl)>0?'positive':Number(p.net_pnl??p.unrealized_pnl)<0?'negative':''}">${money(p.net_pnl??p.unrealized_pnl)}<small>${selectedTab==='closed'?esc(p.exit_reason):'ยังไม่ปิดสถานะ'}</small></td></tr>`).join('');
- const empty=$('positionsEmpty');empty.querySelector('strong').textContent=selectedTab==='open'?'ยังไม่มีสถานะเปิด':'ยังไม่มีเทรดที่ปิดแล้ว';empty.querySelector('p').textContent=selectedTab==='open'?'ระบบจะเปิดเมื่อมีสัญญาณผ่าน AI และ Risk ครบทุกเงื่อนไข':'เมื่อปิดตาม SL/TP ระบบจะบันทึกกำไรขาดทุนไว้ที่นี่';
+
+function renderLatest(digits) {
+  const a = state.latest_alert, now = Date.now() / 1000;
+  const side = $('latestSide');
+  side.className = 'decision' + (a ? ' ' + a.side.toLowerCase() : '');
+  if (!a) { text('latestState', 'WAITING'); $('latestState').className = 'tag muted'; return }
+  const open = now <= a.valid_until_utc_s, stop = isStop(a), label = a.strategy_label ? ` · ${a.strategy_label}` : '';
+  text('latestSide', a.side);
+  text('latestState', open ? (stop ? 'ตั้งคำสั่งได้' : 'เข้าได้') : (stop ? 'เลยเวลาตั้ง' : 'หมดเวลาเข้า')); $('latestState').className = 'tag ' + (open ? 'live' : 'muted');
+  text('latestMeta', `แท่ง M5 ปิด ${stamp(a.bar_close_utc_s)} · ${a.source_symbol}${label}`);
+  if (stop) {
+    text('latestTitle', open ? `ตั้ง ${stopName(a.side)} ภายใน ${time(a.valid_until_utc_s)}` : `${stopName(a.side)} · เลยเวลาตั้งเมื่อ ${time(a.valid_until_utc_s)}`);
+    text('latestDetail', `ราคาคำสั่ง ${price(a.entry, a.digits)} · ฝั่งที่ถูกชนก่อนให้ยกเลิกอีกฝั่ง · ยกเลิก/ปิดทั้งหมดเวลา ${time(a.cancel_at_utc_s)}`);
+  } else {
+    text('latestTitle', open ? `เข้า ${a.side} ได้ถึง ${time(a.valid_until_utc_s)}` : `สัญญาณ ${a.side} · หมดเวลาเข้าเมื่อ ${time(a.valid_until_utc_s)}`);
+    text('latestDetail', `${a.side === 'BUY' ? 'Ask ไม่เกิน' : 'Bid ไม่ต่ำกว่า'} ${price(a.entry_limit, a.digits)} · ` + (a.time_stop_utc_s ? `ถ้ายังไม่ถึง SL/TP ให้ปิดเวลา ${time(a.time_stop_utc_s)}` : 'ไม่มีปิดตามเวลา ถือจนถึง SL/TP'));
+  }
+  text('latestEntry', price(a.entry, a.digits)); text('latestSl', price(a.sl, a.digits)); text('latestTp', price(a.tp, a.digits)); text('latestRr', fixed(a.net_reward_risk, 2));
+  const why = a.indicators?.rsi2_previous != null ? `RSI(2) แท่งก่อน ${fixed(a.indicators.rsi2_previous)} → แท่งสัญญาณ ${fixed(a.indicators.rsi2)} · `
+    : stop ? `กรอบ ${price(a.range_low, a.digits)}–${price(a.range_high, a.digits)} (${fixed(a.range_width_pct, 2)}%) · ` : '';
+  text('latestHint', `${why}ATR ${fixed(a.atr, 2)} · ระยะ SL ${fixed(a.stop_atr, 2)} ATR · spread ที่ใช้คิด ${a.spread_price_used}\nราคาทั้งหมดเป็น bid ของ XM Demo · ระบบไม่ได้ส่งคำสั่งและไม่รู้ราคาที่คุณได้จริง`);
 }
-function renderAnalysis(){const a=state.analysis; text('analysisModel',a?`${a.provider==='codex'?'Codex':'LM Studio'} · ${a.model||'ยังไม่ระบุโมเดล'}`:'รอสัญญาณใหม่');text('candidateCount',state.candidate_count+' สัญญาณ');text('engineStatus','Signal engine · '+(state.engine.status||'—'));if(!a)return;
- text('analysisStatus',a.status.toUpperCase());text('decision',a.effective_decision);text('analysisTitle',`สัญญาณ #${a.signal_record_id} · AI ${a.ai_decision}`);text('analysisDetail',`Risk: ${a.risk_status} · ${new Date(a.updated_at*1000).toLocaleDateString('th-TH',{day:'numeric',month:'short'})} ${time(a.updated_at)}`);text('analysisReason',a.result?.reasons?.join('\n')||a.error_code||'รอ AI วิเคราะห์สัญญาณ ไม่เปิดสถานะจนกว่าจะผ่านการตรวจครบ');
+
+function renderRules() {
+  const list = state.strategies || [], p = state.policy, live = state.engine?.strategies || {};
+  const on = list.filter(s => s.enabled).length;
+  text('strategyName', `เลือก ${on}/${list.length} · ` + (state.conflict === 'skip' ? 'ข้ามสัญญาณเมื่อกลยุทธ์อื่นถือไม้อยู่' : 'แต่ละตัวถือไม้สมมติแยกกัน'));
+  $('strategyList').innerHTML = list.map(s => `<div class="strategy${s.enabled ? ' on' : ''}"><div class="strategy-head">`
+    + `<button class="switch${s.enabled ? ' on' : ''}" data-strategy="${esc(s.id)}" aria-pressed="${s.enabled}" aria-label="${s.enabled ? 'ปิด' : 'เปิด'} ${esc(s.label)}"${busy ? ' disabled' : ''}></button>`
+    + `<b>${esc(s.label)}</b><small>${esc(s.kind === 'pending' ? 'คำสั่งรอ' : 'เข้าตลาด')} · ${esc(s.version)}</small></div>`
+    + `<div class="strategy-now">${esc(live[s.id]?.summary || s.summary || 'รอข้อมูล')}</div>`
+    + `<div class="strategy-rules">${(s.rules || []).map(([k, v]) => `<span>${esc(k)}</span><b>${esc(v)}</b>`).join('')}</div></div>`).join('');
+  document.querySelectorAll('[data-strategy]').forEach(b => b.onclick = () => toggleStrategy(b.dataset.strategy));
+  text('ruleRisk', `RR ≥ ${p.min_net_reward_risk} · SL ${p.min_stop_atr}–${p.max_stop_atr} ATR · spread/ATR ≤ ${p.max_spread_atr}`);
+  text('ruleFooter', `สัญญาณใช้ได้ ${p.max_signal_age_seconds / 60} นาทีหลังแท่งปิด · ราคาเข้าห่างได้ไม่เกิน ${p.max_entry_drift_atr} ATR · ระบบไม่ส่งคำสั่งซื้อขาย`);
 }
-function renderEvents(){const items=state.recent_events||[];$('eventsEmpty').classList.toggle('hidden',items.length>0);$('events').innerHTML=items.map(e=>`<div class="event ${esc(e.level)}"><span class="event-mark">${e.level==='warning'?'!':e.kind==='analysis'?'✧':e.kind==='paper_open'?'↗':e.kind==='paper_close'?'↙':'●'}</span><div class="event-body"><strong>${esc(e.title)}</strong><p>${esc(e.message)}</p><time>${new Date(e.at*1000).toLocaleDateString('th-TH',{day:'numeric',month:'short'})} · ${time(e.at)}</time></div></div>`).join('')}
-async function action(name,extra){if(busy)return;busy=true;document.querySelectorAll('.actions button').forEach(b=>b.disabled=true);toast(name==='start'?'กำลังเริ่มบริการในเครื่อง…':name==='stop'?'กำลังตรวจสถานะก่อนหยุดบริการ…':'กำลังบันทึก…');try{const r=await bridge(name,extra);toast(r.error|| (name==='start'?'เริ่มบริการแล้ว · กำลังตรวจการเชื่อมต่อ':name==='stop'?'หยุดบริการแล้ว · เปิดครั้งถัดไปยังพักเปิดไม้ใหม่อยู่':r.paused?'พักเปิดไม้ใหม่แล้ว · ยังติดตาม SL/TP เดิม':'เปิดรับไม้ใหม่แล้ว · ต้องผ่าน AI และ Risk'))}catch(e){toast('ดำเนินการไม่สำเร็จ กรุณาตรวจบริการในเครื่อง')}finally{busy=false;document.querySelectorAll('.actions button').forEach(b=>b.disabled=false);await refresh()}}
-$('start').onclick=()=>action('start');$('stop').onclick=()=>action('stop');$('pause').onclick=()=>action('pause',{paused:!state?.account?.operator_paused});
-async function selectProvider(provider){if(providerBusy||!state?.connected||state.ai_selection?.provider===provider)return;providerBusy=true;$('providerLm').disabled=true;$('providerCodex').disabled=true;try{const r=await bridge('provider',{provider});toast(r.error||`เลือก ${provider==='codex'?'Codex':'LM Studio'} แล้ว · มีผลกับงานใหม่`)}catch(e){toast('บันทึกตัวเลือก AI ไม่สำเร็จ')}finally{providerBusy=false;await refresh()}}
-$('providerLm').onclick=()=>selectProvider('lm_studio');$('providerCodex').onclick=()=>selectProvider('codex');
-$('enableNotice').onclick=async()=>{try{const ns=state?.notifications;if(ns==='denied'){toast('ไปที่ System Settings → Notifications → XM Control แล้วเปิด Allow Notifications');return}const r=await bridge(ns==='enabled'?'testNotification':'notifications');toast(r.notifications==='enabled'?(ns==='enabled'?(r.sent?'ส่งการแจ้งเตือนทดสอบแล้ว':'macOS ไม่รับการแจ้งเตือน กรุณาตรวจสิทธิ์'):'เปิดการแจ้งเตือนแล้ว · กดอีกครั้งเพื่อทดสอบ'):r.notifications==='denied'?'เปิดสิทธิ์ที่ System Settings → Notifications → XM Control':'ยังไม่ได้รับสิทธิ์แจ้งเตือน');await refresh()}catch(e){toast('ตั้งค่าการแจ้งเตือนไม่สำเร็จ')}};
-document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{selectedTab=b.dataset.tab;document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===b));renderPositions()});
-document.querySelectorAll('.nav').forEach(b=>b.onclick=()=>{document.body.dataset.view=b.dataset.view;text('pageTitle',b.textContent.slice(1).trim());document.querySelectorAll('.nav').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('[data-panel]').forEach(x=>x.classList.toggle('hidden',!x.dataset.panel.split(' ').includes(b.dataset.view)))});
-function clock(){text('clock',new Date().toLocaleString('th-TH',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit',second:'2-digit'}))}clock();setInterval(clock,1000);refresh();setInterval(refresh,5000);
+
+async function toggleStrategy(id) {
+  if (busy || !state?.strategies) return;
+  const current = state.strategies.filter(s => s.enabled).map(s => s.id);
+  const next = current.includes(id) ? current.filter(x => x !== id) : [...current, id];
+  if (!next.length) { toast('ต้องเลือกอย่างน้อย 1 กลยุทธ์ · ถ้าไม่ต้องการแจ้งเตือนให้กดปิดเสียงแทน'); return }
+  busy = true;
+  try {
+    const r = await bridge('strategies', {enabled: next});
+    const names = state.strategies.filter(s => (r.enabled || []).includes(s.id)).map(s => s.label).join(', ');
+    toast(r.error || r.detail || `แจ้งเตือนจาก: ${names}`);
+  } catch (e) { toast('บันทึกการเลือกกลยุทธ์ไม่สำเร็จ') }
+  finally { busy = false; await refresh() }
+}
+
+function renderAlerts() {
+  const items = state.alerts || [], c = state.alert_counts || {};
+  text('alertBadge', String(items.length));
+  text('alertTotals', `แจ้งแล้ว ${c.alert || 0} · ไม่ผ่าน ${c.rejected || 0}`);
+  $('alertsEmpty').classList.toggle('hidden', items.length > 0);
+  $('alerts').innerHTML = items.map(a => {
+    const why = a.reason_codes?.length ? ' · ' + a.reason_codes.map(r => REASON[r] || r).join(', ') : '';
+    const who = a.strategy_label ? ' · ' + a.strategy_label : '';
+    return `<tr><td>${esc(stamp(a.bar_close_utc_s))}<small>${esc((ALERT[a.status] || a.status) + why + who)}</small></td>`
+      + `<td class="side-${a.side === 'BUY' ? 'buy' : 'sell'}">${esc(isStop(a) ? stopName(a.side) : a.side)}</td><td>${esc(price(a.entry, a.digits))}</td>`
+      + `<td>${esc(price(a.sl, a.digits))}<small>TP ${esc(price(a.tp, a.digits))}</small></td><td class="right">${esc(fixed(a.net_reward_risk, 2))}</td></tr>`;
+  }).join('');
+}
+
+function renderEvents() {
+  const items = state.recent_events || [];
+  $('eventsEmpty').classList.toggle('hidden', items.length > 0);
+  $('events').innerHTML = items.map(e => `<div class="event ${esc(e.level)}"><span class="event-mark">${e.level === 'warning' ? '!' : e.kind === 'trade_alert' ? '↗' : e.kind === 'trade_update' ? '↻' : '●'}</span><div class="event-body"><strong>${esc(e.title)}</strong><p>${esc(e.message)}</p><time>${esc(stamp(e.at))}</time></div></div>`).join('');
+}
+
+async function action(name, extra) {
+  if (busy) return; busy = true;
+  document.querySelectorAll('.actions button').forEach(b => b.disabled = true);
+  toast(name === 'start' ? 'กำลังเริ่มบริการในเครื่อง…' : name === 'stop' ? 'กำลังหยุดบริการ…' : 'กำลังบันทึก…');
+  try {
+    const r = await bridge(name, extra);
+    toast(r.error || (name === 'start' ? 'เริ่มบริการแล้ว · กำลังตรวจการเชื่อมต่อ' : name === 'stop' ? 'หยุดบริการแล้ว · จะไม่มีการแจ้งเตือนจนกว่าจะเริ่มใหม่' : r.paused ? 'ปิดเสียงแจ้งเตือนแล้ว · ยังบันทึกสัญญาณต่อ' : 'เปิดแจ้งเตือนแล้ว'));
+  } catch (e) { toast('ดำเนินการไม่สำเร็จ กรุณาตรวจบริการในเครื่อง') }
+  finally { busy = false; document.querySelectorAll('.actions button').forEach(b => b.disabled = false); await refresh() }
+}
+$('start').onclick = () => action('start');
+$('stop').onclick = () => action('stop');
+$('mute').onclick = () => action('pause', {paused: !state?.muted});
+$('telegramTest').onclick = async () => {
+  try {
+    const r = await bridge('telegramTest');
+    toast(r.queued ? 'ส่งข้อความทดสอบเข้าคิวแล้ว · ตรวจในแชท Telegram' : r.reason === 'test_already_pending' ? 'ยังมีข้อความทดสอบรอส่งอยู่' : r.error || 'Telegram ยังไม่พร้อม กรุณาตรวจการตั้งค่า');
+    await refresh();
+  } catch (e) { toast('ส่งข้อความทดสอบไม่สำเร็จ') }
+};
+$('telegramCommands').onclick = async () => {
+  const on = !state?.telegram?.commands?.enabled;
+  try {
+    const r = await bridge('telegramCommands', {enabled: on});
+    toast(r.error || (r.enabled ? 'เปิดรับคำสั่งแล้ว · พิมพ์ /status ในแชท Telegram' : on ? 'Telegram ยังไม่พร้อม กรุณาตรวจการตั้งค่า' : 'ปิดรับคำสั่งแล้ว · Mac หยุดดึงข้อความจาก Telegram'));
+    await refresh();
+  } catch (e) { toast('บันทึกการตั้งค่าคำสั่งไม่สำเร็จ') }
+};
+$('enableNotice').onclick = async () => {
+  try {
+    const ns = state?.notifications;
+    if (ns === 'denied') { toast('ไปที่ System Settings → Notifications → XM Control แล้วเปิด Allow Notifications'); return }
+    const r = await bridge(ns === 'enabled' ? 'testNotification' : 'notifications');
+    toast(r.notifications === 'enabled' ? (ns === 'enabled' ? (r.sent ? 'ส่งการแจ้งเตือนทดสอบแล้ว' : 'macOS ไม่รับการแจ้งเตือน กรุณาตรวจสิทธิ์') : 'เปิดการแจ้งเตือนแล้ว · กดอีกครั้งเพื่อทดสอบ') : r.notifications === 'denied' ? 'เปิดสิทธิ์ที่ System Settings → Notifications → XM Control' : 'ยังไม่ได้รับสิทธิ์แจ้งเตือน');
+    await refresh();
+  } catch (e) { toast('ตั้งค่าการแจ้งเตือนไม่สำเร็จ') }
+};
+document.querySelectorAll('.nav').forEach(b => b.onclick = () => {
+  document.body.dataset.view = b.dataset.view; text('pageTitle', b.textContent.slice(1).trim());
+  document.querySelectorAll('.nav').forEach(x => x.classList.toggle('active', x === b));
+  document.querySelectorAll('[data-panel]').forEach(x => x.classList.toggle('hidden', !x.dataset.panel.split(' ').includes(b.dataset.view)));
+});
+function clock() { text('clock', new Date().toLocaleString('th-TH', {day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit'})) }
+clock(); setInterval(clock, 1000); refresh(); setInterval(refresh, 5000);

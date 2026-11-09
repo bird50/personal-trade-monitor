@@ -13,7 +13,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 RUNTIME = ROOT / '.runtime'
-SERVICES = {'receiver': (8001, 'app.mt5_bridge:app'), 'xm': (8002, 'app.xm_main:create_xm_app')}
+SERVICES = {'receiver': (8001, 'app.mt5_bridge:app'), 'xm': (8002, 'app.alert_main:create_alert_app')}
 
 
 def command(args):

@@ -8,7 +8,10 @@ from .database import Database
 from .models import MarketStructure, Signal
 from .mt5_bridge import Snapshot
 
-VERSION = "xm-0.1"
+VERSION = "xm-0.2"
+# xm-0.2 keeps the xm-0.1 indicator/pivot state layout and only drops the M5 RSI band, so a
+# persisted xm-0.1 checkpoint can continue in place. Any other version still needs a reset.
+UPGRADABLE_STATE_VERSIONS = ("xm-0.1",)
 
 
 def smooth(state: dict, key: str, value: float | None, length: int, ema=False):
@@ -58,14 +61,21 @@ def update_m5(state: dict, bar: dict):
             "plus_di": pdi, "minus_di": mdi, "cross_up": cross_up, "cross_down": cross_down}
 
 
-def choose_side(metrics: dict, h1: dict | None):
-    if h1 is None or any(metrics[k] is None for k in ("rsi", "adx", "atr", "plus_di", "minus_di")):
+def choose_side(metrics: dict, h1: dict | None, rsi_band: bool = False):
+    """xm-0.2 rules; ``rsi_band=True`` restores the xm-0.1 RSI band (BUY 50-70, SELL 30-50).
+
+    RSI is still computed and kept in signal evidence; xm-0.2 does not filter on it.
+    """
+    required = ("adx", "atr", "plus_di", "minus_di") + (("rsi",) if rsi_band else ())
+    if h1 is None or any(metrics[k] is None for k in required):
         return None
     if metrics["atr"] <= 0 or metrics["adx"] < 20:
         return None
-    if h1["close"] > h1["ema_fast"] > h1["ema_slow"] and metrics["cross_up"] and 50 <= metrics["rsi"] < 70 and metrics["plus_di"] > metrics["minus_di"]:
+    if (h1["close"] > h1["ema_fast"] > h1["ema_slow"] and metrics["cross_up"]
+            and (not rsi_band or 50 <= metrics["rsi"] < 70) and metrics["plus_di"] > metrics["minus_di"]):
         return "BUY"
-    if h1["close"] < h1["ema_fast"] < h1["ema_slow"] and metrics["cross_down"] and 30 < metrics["rsi"] <= 50 and metrics["minus_di"] > metrics["plus_di"]:
+    if (h1["close"] < h1["ema_fast"] < h1["ema_slow"] and metrics["cross_down"]
+            and (not rsi_band or 30 < metrics["rsi"] <= 50) and metrics["minus_di"] > metrics["plus_di"]):
         return "SELL"
     return None
 
@@ -165,7 +175,8 @@ class XMEngine:
             initialized = bool(state.get("version"))
             error = None
             if initialized:
-                if state["version"] != VERSION or state["offset"] != snapshot.observed_utc_offset_s:
+                known = state["version"] == VERSION or state["version"] in UPGRADABLE_STATE_VERSIONS
+                if not known or state["offset"] != snapshot.observed_utc_offset_s:
                     error = "version_or_offset_changed_reset_required"
                 for frame in ("m5", "h1"):
                     previous = {b["open_server_s"]: b for b in state["history"][frame]}
@@ -179,6 +190,9 @@ class XMEngine:
             if error:
                 status = {"status": error, "last_m5_server_s": state.get("last_m5")}
             else:
+                if initialized and state["version"] != VERSION:
+                    # Checked above: an upgradable checkpoint continues with the new rules.
+                    state["upgraded_from"], state["version"] = state["version"], VERSION
                 if not initialized:
                     state = {"version": VERSION, "offset": snapshot.observed_utc_offset_s,
                              "last_m5": 0, "last_h1": 0, "index": -1, "m5_indicators": {},

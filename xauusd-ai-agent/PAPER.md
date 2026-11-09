@@ -1,5 +1,7 @@
 # บัญชี Paper Trading ของ XM
 
+> **โหมดเดิม:** ตั้งแต่ 8 พฤศจิกายน 2026 บริการที่ XM Control เปิดคือโหมดแจ้งเตือนอย่างเดียว ([ALERTS.md](ALERTS.md)) ซึ่งไม่ใช้บัญชี Paper และ `XMPaperTicks` เนื้อหาด้านล่างใช้กับบริการเดิม `sh scripts/run_xm_paper.sh`
+
 บัญชีนี้เป็นบัญชีจำลองภายใน Python เริ่มทุน **10,000 USD** แยกจากยอดใน XM Demo ใช้ `simulated_ounce` และมูลค่าราคาเปลี่ยนหนึ่งหน่วย = 1 USD ต่อ quantity หนึ่งหน่วยตาม risk policy เดิม ไม่ใช่ lot หรือ contract specification ของ XM
 
 เส้นทาง: `XMPriceBridge → candidate → LM Studio → Risk Manager → Paper ledger ← XMPaperTicks`
@@ -41,7 +43,16 @@ Daily loss 2%, จำนวนสถานะ 1 และ drift 0.25 ATR เป�
 
 Equity = balance + unrealized PnL ที่ mark ด้วยราคาฝั่งปิด; entry commission ถูกหักจาก balance ทันที ส่วน exit commission หักเมื่อปิด Daily loss รวม unrealized PnL และค่าธรรมเนียม วันใหม่ใช้ equity จาก mark ก่อนหน้าเป็น baseline เพื่อให้ gap ข้ามวันนับเป็นขาดทุนด้วย หากแตะเกณฑ์จะล็อกการเปิดสถานะใหม่จนวันถัดไป ยังคงติดตาม SL/TP ของสถานะเดิม ไม่มีการบังคับปิดเพียงเพราะชน daily limit
 
-เมื่อแก้ policy แล้ว hash ไม่ตรงกับบัญชีเดิม ระบบหยุดรับ entry ใหม่ แต่ยังปิดสถานะเดิมด้วยต้นทุนที่บันทึกไว้ตอนเปิด ไม่รีเซ็ตยอดทุนหรือประวัติอัตโนมัติ ต้องตรวจและอนุมัติการย้าย policy ของบัญชีอย่างชัดเจนก่อนใช้ค่าใหม่ต่อ
+เมื่อเปิดโหมด **ยกเว้น Risk** Paper ข้าม daily loss limit, จำนวนสถานะสูงสุด, ความเสี่ยงรวม, เพดาน notional, drift, spread และ RR สุทธิตอน fill แต่ยังคุมความเสี่ยงต่อไม้ 0.5% ของ equity และยังตรวจ tick, อายุ quote, fill ระหว่าง SL/TP และ equity ดู [RISK.md](RISK.md#โหมดยกเว้น-ai-และ-risk-manager)
+
+เมื่อแก้ policy แล้ว hash ไม่ตรงกับบัญชีเดิม ระบบหยุดรับ entry ใหม่ แต่ยังปิดสถานะเดิมด้วยต้นทุนที่บันทึกไว้ตอนเปิด ไม่รีเซ็ตยอดทุนหรือประวัติอัตโนมัติ ต้องตรวจและอนุมัติการย้าย policy ของบัญชีอย่างชัดเจนก่อนใช้ค่าใหม่ต่อ ด้วย
+
+```sh
+.venv/bin/python scripts/adopt_paper_policy.py                                   # ดูค่าที่จะเปลี่ยน (dry run)
+.venv/bin/python scripts/adopt_paper_policy.py --reason "เหตุผล" --confirm      # บันทึก
+```
+
+คำสั่งนี้ไม่ทำงานถ้ายังมีไม้เปิด ไม่แตะยอดเงิน ledger ไม้ หรือ cursor ของ tick และเก็บ policy เดิมไว้ในตาราง `paper_policy_history` ให้สำรองฐานข้อมูลด้วย SQLite backup API ก่อน ถ้าบริการ XM ยังโหลด config ชุดเก่าอยู่ ให้รีสตาร์ตหลังจากนั้น
 
 ## ติดตั้ง tick exporter ใน MT5
 

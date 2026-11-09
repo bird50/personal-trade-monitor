@@ -1,18 +1,20 @@
 # สัญญาณ XM จากราคา MT5
 
+> **โหมดเดิม:** ตั้งแต่ 8 พฤศจิกายน 2026 บริการที่ XM Control เปิดคือโหมดแจ้งเตือนอย่างเดียว ([ALERTS.md](ALERTS.md)) ซึ่งไม่ใช้สัญญาณ `xm-0.2`, AI และบัญชี Paper เนื้อหาด้านล่างใช้กับบริการเดิม `sh scripts/run_xm_paper.sh`
+
 เส้นทางปัจจุบัน: `XM Demo GOLD → EA → market receiver :8001 → Python engine + AI/risk API :8002`
 
-Engine ใช้ชื่อ `XM:XAUUSD`, schema 3 และ strategy `xm-0.1` เก็บใน `data/xm-trading.db` ส่วนราคาต้นทางยังอยู่ `data/mt5-market.db` สัญญาณ OANDA และ policy เดิมแยกอยู่เหมือนเดิม
+Engine ใช้ชื่อ `XM:XAUUSD`, schema 3 และ strategy `xm-0.2` (ตั้งแต่ 6 พฤศจิกายน 2026; ก่อนหน้านั้นคือ `xm-0.1`) เก็บใน `data/xm-trading.db` ส่วนราคาต้นทางยังอยู่ `data/mt5-market.db` สัญญาณ OANDA และ policy เดิมแยกอยู่เหมือนเดิม
 
-## กฎของ xm-0.1
+## กฎของ xm-0.2
 
-ใช้ค่าจาก Pine v0.2 เป็นจุดเริ่มต้น:
+ใช้ค่าจาก Pine v0.2 เป็นจุดเริ่มต้น `xm-0.2` ตัดเงื่อนไข RSI ออก (แถว RSI ด้านล่างใช้กับ `xm-0.1` เท่านั้น) RSI14 ยังคำนวณและเก็บเป็นหลักฐานในสัญญาณ แต่ไม่ใช้กรอง ส่วนการตรวจโครงสร้าง pivot ถูกปิดด้วย `"require_market_structure": false` ใน `config/risk-xm-paper.json` engine ยังคำนวณและแนบ `market_structure` ไว้เหมือนเดิม
 
 | กฎ | BUY | SELL |
 | --- | --- | --- |
 | H1 ที่ปิดก่อน/ตรงเวลาเปิด M5 | Close > EMA50 > EMA200 | Close < EMA50 < EMA200 |
 | M5 ปิดแล้ว | Close ตัดขึ้น EMA20 | Close ตัดลง EMA20 |
-| RSI14 | 50 ≤ RSI < 70 | 30 < RSI ≤ 50 |
+| RSI14 (เฉพาะ xm-0.1) | 50 ≤ RSI < 70 | 30 < RSI ≤ 50 |
 | ADX14 | ≥20 และ +DI > −DI | ≥20 และ −DI > +DI |
 | SL | Entry − 1.5×ATR14 | Entry + 1.5×ATR14 |
 | TP | 2 เท่าของระยะ SL | 2 เท่าของระยะ SL |
@@ -39,6 +41,7 @@ Candidate lock ไม่มี margin, slippage ต่อ fill หรือ brok
 - สำหรับ schema 3 เวลา `h1.bar_close_ms` และเวลา pivot เป็น **broker server wall-clock milliseconds** ตาม `source.context_time_basis` ใช้เทียบลำดับกับ `source.bar_close_server_ms` ไม่ใช่ UTC
 - ไม่แปลงประวัติทั้งหมดด้วย offset ปัจจุบัน จึงไม่สมมติ timezone/DST ย้อนหลัง
 - หาก offset เปลี่ยนจาก checkpoint จะหยุดที่ `version_or_offset_changed_reset_required` เพื่อให้ตรวจ timezone และเริ่ม baseline ใหม่อย่างชัดเจน
+- checkpoint ของ `xm-0.1` ใช้ต่อกับ `xm-0.2` ได้ทันที (indicator/pivot state เหมือนกัน) โดยบันทึก `upgraded_from` ใน state เวอร์ชันอื่นยังหยุดที่ `version_or_offset_changed_reset_required`
 - เก็บ server, broker_symbol, bid/ask, tick size, quote timestamp, snapshot timestamp, input SHA256 ไว้ในสัญญาณ และเก็บ snapshot เต็มพร้อม state ก่อนประมวลผลใน `xm_candidate_inputs` เพื่อ audit หลัง archive ของ receiver ถูกหมุนออก
 
 ## AI และ Risk Manager
@@ -76,6 +79,8 @@ API ที่ `127.0.0.1:8002` ใช้ `API_TOKEN` จาก `.env` เพื�
 ## กรณีหยุดอย่างปลอดภัย
 
 `feed_stale`, `source_mismatch`, `tick_policy_mismatch`, `insufficient_history`, `closed_history_revised_reset_required`, `missing_overlap_reset_required` และ `out_of_order_feed` ไม่เลื่อน checkpoint หรือปล่อยสัญญาณจากข้อมูลผิด หาก history ถูกแก้หรือขาดช่วงยาวเกินหน้าต่างที่ทับกับ checkpoint ต้องหยุดตรวจต้นทางและเริ่ม baseline ใหม่ โดยเก็บฐานข้อมูลเดิมเป็นหลักฐานก่อน ห้ามล้าง checkpoint เพื่อให้ข้ามข้อผิดพลาดโดยไม่ตรวจ
+
+เมื่อเริ่ม baseline ใหม่ ให้เก็บ checkpoint เดิมไว้ในตาราง `xm_engine_resets` (เวลา, เหตุผล, state และ status เดิม) ก่อนลบแถว `xm_engine` ครั้งแรกทำเมื่อ 6 พฤศจิกายน 2026 เพราะบริการหยุดนานกว่าหน้าต่าง M5 300 แท่ง (checkpoint สุดท้าย 2026-11-04 12:40 เวลา server) และสำรองฐานข้อมูลไว้ที่ `.runtime/backups/xm-trading.db.20261106T193908.before-xm-0.2`
 
 ## ผลตรวจ 2 พฤศจิกายน 2026
 

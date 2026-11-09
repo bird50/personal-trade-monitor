@@ -99,7 +99,7 @@ class XMSource(StrictModel):
     provider: Literal["xm_mt5_demo"]
     server: Annotated[str, Field(min_length=1, max_length=80)]
     broker_symbol: Annotated[str, Field(min_length=1, max_length=40)]
-    engine_version: Literal["xm-0.1"]
+    engine_version: Literal["xm-0.1", "xm-0.2"]
     context_time_basis: Literal["broker_server_wall_clock"]
     bar_close_server_ms: Timestamp
     snapshot_utc_s: Timestamp
@@ -122,7 +122,7 @@ class XMSource(StrictModel):
 
 class Signal(StrictModel):
     schema_version: Annotated[int, Field(ge=1, le=3)]
-    strategy_version: Literal["0.1", "0.2", "xm-0.1"]
+    strategy_version: Literal["0.1", "0.2", "xm-0.1", "xm-0.2"]
     event: Literal["signal"]
     signal_id: Annotated[str, Field(min_length=1, max_length=160)]
     symbol: Annotated[str, Field(pattern=r"^[A-Z0-9_]+:XAUUSD[A-Z0-9_.-]*$", max_length=80)]
@@ -148,13 +148,15 @@ class Signal(StrictModel):
         if self.schema_version == 2:
             expected_id += ":0.2"
         if self.schema_version == 3:
-            expected_id += ":xm-0.1"
-        if (self.schema_version, self.strategy_version) not in ((1, "0.1"), (2, "0.2"), (3, "xm-0.1")):
+            expected_id += f":{self.strategy_version}"
+        if (self.schema_version, self.strategy_version) not in ((1, "0.1"), (2, "0.2"), (3, "xm-0.1"), (3, "xm-0.2")):
             raise ValueError("Schema and strategy versions do not match")
         event_context_ms = self.bar_close_ms
         if self.schema_version == 3:
             if self.source is None or self.symbol != "XM:XAUUSD":
                 raise ValueError("XM signals require XM source evidence")
+            if self.source.engine_version != self.strategy_version:
+                raise ValueError("XM engine and strategy versions do not match")
             event_context_ms = self.source.bar_close_server_ms
             if event_context_ms - self.source.observed_utc_offset_s * 1000 != self.bar_close_ms:
                 raise ValueError("XM event time does not match observed offset")

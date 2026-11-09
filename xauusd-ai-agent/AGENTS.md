@@ -4,18 +4,19 @@ Applies to this directory and its descendants. Use Thai for user-facing explanat
 
 ## Project context
 
-This is a local Mac research system: **XM Demo → MT5 EAs → Python → LM Studio/Codex → Risk → Paper Trading → XM Control/macOS notifications**. The supported execution scope is Python paper simulation. Do not introduce broker order execution or enable real-account trading as an incidental change.
+This is a local Mac research system. The active service is alert-only: **XM Demo → MT5 EA → Python strategies selected in XM Control (RSI(2), CCI, Heikin-Ashi, TPSL London breakout) → Risk level checks → XM Control/macOS/Telegram notifications** (no AI, no Paper account, no orders; see [ALERTS.md](ALERTS.md)). The previous **LM Studio/Codex → Risk → Paper Trading** service remains in the code but is not started by XM Control. The supported execution scope is alerts and Python paper simulation. Do not introduce broker order execution or enable real-account trading as an incidental change.
 
 Start with [README.md](README.md). Read the relevant guide for the area being changed:
 
 | Area | Source | Guide |
 | --- | --- | --- |
+| Trade alerts (active service) | `app/alert_engine.py`, `app/alert_strategies.py`, `app/alert_main.py`, `config/alert-xm.json`, `scripts/check_alert_parity.py` | [ALERTS.md](ALERTS.md) |
 | Market snapshots and ordered ticks | `app/mt5_bridge.py`, `app/tick_feed.py`, `mt5/` | [MT5.md](MT5.md), [PAPER.md](PAPER.md) |
-| XM candidates and checkpoints | `app/xm_engine.py`, `app/xm_main.py`, `app/structure.py` | [XM-SIGNALS.md](XM-SIGNALS.md) |
+| Previous XM candidates and checkpoints | `app/xm_engine.py`, `app/xm_main.py`, `app/structure.py` | [XM-SIGNALS.md](XM-SIGNALS.md) |
 | AI providers, validation and jobs | `app/ai_analyzer.py`, `app/codex_analyzer.py`, `app/ai_providers.py`, `app/worker.py` | [AI.md](AI.md), [CODEX.md](CODEX.md) |
 | Signal validation, API and storage | `app/models.py`, `app/webhook.py`, `app/main.py`, `app/database.py` | [README.md](README.md) |
 | Risk and account accounting | `app/risk_manager.py`, `app/paper_trading.py`, `config/` | [RISK.md](RISK.md), [PAPER.md](PAPER.md) |
-| Mac UI, controls and notifications | `dashboard/`, `mac/XMControl.swift`, `app/control_center.py`, `scripts/control_system.py` | [MAC-CONTROL.md](MAC-CONTROL.md) |
+| Mac UI, controls and notifications | `dashboard/`, `mac/XMControl.swift`, `app/alert_main.py` (previous: `app/control_center.py`), `scripts/control_system.py` | [MAC-CONTROL.md](MAC-CONTROL.md) |
 | Optional TradingView/OANDA flow | `pine/`, `app/main.py` | [pine/README.md](pine/README.md) |
 
 Historical reports under `tests/` describe checks at their recorded dates. They do not establish current process, feed, model or account status. Some older guides retain historical limitations; compare them with the current source and README.
@@ -25,7 +26,8 @@ Historical reports under `tests/` describe checks at their recorded dates. They 
 | Service | Launch command | Loopback port | Default database |
 | --- | --- | --- | --- |
 | MT5 receiver | `sh scripts/run_mt5_bridge.sh` | 8001 | `data/mt5-market.db` |
-| XM/AI/Risk/Paper | `sh scripts/run_xm.sh` | 8002 | `data/xm-trading.db` |
+| XM trade alerts (active) | `sh scripts/run_xm.sh` | 8002 | `data/xm-alerts.db` |
+| Previous XM/AI/Risk/Paper (manual only) | `sh scripts/run_xm_paper.sh` | 8002 | `data/xm-trading.db` |
 | Optional TradingView webhook | `sh scripts/run_local.sh` | 8000 | `data/trading.db` |
 
 These are long-running commands; use separate sessions when needed. Keep loopback binding, single-worker operation and disabled access logs. Do not start the optional webhook service, open a Tunnel, publish the dashboard or connect messaging services unless relevant to the user's request.
@@ -101,7 +103,7 @@ For documentation-only changes, verify referenced paths, commands, config names 
 - Compile changed MQL5 sources with MetaEditor and inspect its compiler log. A process exit code alone does not prove compilation succeeded. Verify the installed binary matches the compiled source.
 - Installing an EA file does not prove MT5 loaded it. Reattach/reload and confirm the version/startup log and advancing data. If Wine UI control is unavailable, prepare the files first and request only the necessary manual MT5 steps from the user.
 - Diagnose tick problems using snapshots, stream receipt/coverage age, paper status and filtered EA logs. Do not infer fresh ticks from a fresh snapshot or a successful `/health` response.
-- Use `scripts/mt5_status.py GOLD`, `scripts/xm_status.py` and `scripts/paper_status.py` for existing local diagnostics. Do not stop services just to perform a read-only status check.
+- Use `scripts/mt5_status.py GOLD` and `scripts/xm_status.py` for local diagnostics (`scripts/paper_status.py` applies to the previous Paper service). Do not stop services just to perform a read-only status check.
 
 ## Documentation and handoff
 
