@@ -16,6 +16,7 @@
 | Net Reward/Risk หลังต้นทุน | อย่างน้อย **1.2** (เดิม 1.5) ตรวจทั้งตอนประเมินและตอน fill |
 | โครงสร้างตลาด (`confirmation_blockers`) | **ไม่บังคับ** — `"require_market_structure": false` |
 | Spread จำลองขั้นต่ำ / tick ราคา | 0.60 / 0.01 |
+| ระยะ SL / M5 ATR14 | **1–12 เท่า** (ตั้งแต่ 8 พฤศจิกายน 2026 · เดิม 1–3) เพื่อให้ stop ที่อิงกรอบราคาแบบ London breakout ผ่านได้ [ผลทดสอบ](tests/tpsl-london-breakout-2026-11-08.md) RSI(2) ใช้ SL 1.8 ATR จึงไม่ได้รับผล |
 
 `require_market_structure` เป็นค่าเลือกได้: ถ้าไม่ใส่ (ค่าเดิมของทุก policy) Risk ยังตรวจ structural blockers เหมือนเดิมและ hash ของ policy เดิมไม่เปลี่ยน ใส่ `false` แล้วข้ามเฉพาะ blocker ของ pivot ส่วนกฎอื่นทั้งหมดยังเหมือนเดิม ถ้าเปิด AI ใช้อีกครั้ง AI ยังต้อง WAIT เมื่อมี blocker ตามกฎใน [AI.md](AI.md) ปัจจุบันบัญชี Paper ใช้ **ยกเว้น AI** (ดูหัวข้อด้านล่าง) จึงไม่เรียกโมเดล
 
@@ -101,7 +102,7 @@ SQLite schema version 2 เพิ่มตาราง `risk_evaluations` โด
 | --- | --- | --- | --- |
 | เรียก LM Studio / Codex | ✓ | ข้าม · ใช้ฝั่งของสัญญาณ (`provider=bypass`, `model=none`) | ✓ |
 | โครงสร้างตลาด (`confirmation_blockers`) | ✓ | ข้าม | ข้ามใน Risk แต่ถ้ายังใช้ AI อยู่ AI ยังต้อง WAIT เมื่อมี blocker |
-| Stop 1–3 ATR, spread/ATR, RR สุทธิ ≥ 1.5 | ✓ | ✓ | ข้าม |
+| Stop/ATR (XM 1–12, OANDA 1–3), spread/ATR, RR สุทธิ ≥ 1.5 (XM 1.2) | ✓ | ✓ | ข้าม |
 | Drift ตอน fill, spread ตอน fill, RR สุทธิตอน fill | ✓ | ✓ | ข้าม |
 | เพดานขาดทุนรายวัน, จำนวนไม้สูงสุด, ความเสี่ยงรวม, เพดาน notional | ✓ | ✓ | ข้าม |
 | Server/symbol, อายุสัญญาณ/quote, ราคาตรง tick, AI ไม่แก้ราคา/ไม่กลับฝั่ง | ✓ | ✓ | ✓ ไม่ยกเว้น |

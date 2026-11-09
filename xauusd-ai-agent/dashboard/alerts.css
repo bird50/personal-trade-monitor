@@ -8,3 +8,6 @@
 .side-sell{color:var(--red)}
 .tag.live{color:var(--green);border-color:#2f5247;background:#6cc6ac0d}
 td.right{text-align:right}
+.health-grid{grid-template-columns:repeat(5,minmax(0,1fr))}
+@media(max-width:1150px){.health-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+.text-actions{display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:2px}

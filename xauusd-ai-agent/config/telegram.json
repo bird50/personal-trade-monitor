@@ -1,0 +1,11 @@
+{
+  "version": "telegram-v1",
+  "enabled": true,
+  "events": ["trade_alert", "health_down", "health_recovered", "engine_reset"],
+  "send_expired_alerts": false,
+  "timeout_seconds": 5,
+  "max_attempts": 8,
+  "poll_seconds": 3,
+  "command_poll_seconds": 25,
+  "command_max_age_seconds": 120
+}

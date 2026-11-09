@@ -11,6 +11,7 @@ from app.config import ROOT, Settings
 from app.database import Database
 from app.mt5_bridge import BridgeSettings, MarketStore, Snapshot
 from app.risk_manager import RiskPolicy
+from app.telegram_notifier import TelegramConfig
 from backtest.data import resample
 
 OFFSET = 7200
@@ -279,7 +280,8 @@ def test_alert_app_routes_auth_and_mute(tmp_path, market, monkeypatch):
     snap = snapshot_at(market, 2600)
     monkeypatch.setattr("time.time", lambda: snap.captured_at_utc_s + 1)
     store.insert(snap)
-    app = create_alert_app(settings, feed, policy(), database_path=tmp_path / "alerts.db")
+    app = create_alert_app(settings, feed, policy(), database_path=tmp_path / "alerts.db",
+                           telegram_config=TelegramConfig(version="telegram-v1", enabled=False, events=("trade_alert",)))
     auth = {"Authorization": "Bearer " + "r" * 43}
     with TestClient(app) as client:
         assert client.get("/health").json()["mode"] == "alert_only"
@@ -294,6 +296,7 @@ def test_alert_app_routes_auth_and_mute(tmp_path, market, monkeypatch):
         assert state["workers"] == {"engine": True, "monitor": True} and state["feed"]["available"]
         assert state["strategy"]["rr"] == 2.5 and state["policy"]["min_net_reward_risk"] == "1.2"
         assert "account" not in state and "ai" not in state
+        assert state["telegram"]["state"] == "disabled" and state["telegram"]["worker"] is True
         assert client.post("/dashboard/pause", headers=auth, json={"paused": True}).json() == {"paused": True, "changed": True}
         assert client.get("/dashboard/state", headers=auth).json()["muted"] is True
         assert client.post("/dashboard/pause", headers=auth, json={"paused": "yes"}).status_code == 422

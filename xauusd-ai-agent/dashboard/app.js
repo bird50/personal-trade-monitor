@@ -29,6 +29,21 @@ function render() {
   text('noticeStatus', ns === 'enabled' ? 'เปิดใช้งานแล้ว' : ns === 'denied' ? 'ยังไม่ได้รับอนุญาต' : 'ยังไม่ได้เปิดใช้งาน');
   text('enableNotice', ns === 'enabled' ? 'ทดสอบการแจ้งเตือน ↗' : ns === 'denied' ? 'ดูวิธีเปิดการแจ้งเตือน ↗' : 'เปิดการแจ้งเตือน ↗');
   dot('noticeDot', ns === 'enabled');
+  const tg = state?.telegram;
+  const TG = {disabled: 'ปิดอยู่', missing_credentials: 'ยังไม่ได้ใส่ token/chat ID', invalid_bot_token: 'bot token ไม่ถูกรูปแบบ',
+    invalid_chat_id: 'chat ID ไม่ถูกรูปแบบ', failing: 'ส่งไม่สำเร็จ', ready: 'พร้อมส่ง'};
+  text('telegramStatus', !connected || !tg ? 'ไม่มีข้อมูลปัจจุบัน' : (TG[tg.state] || tg.state) + (tg.worker === false ? ' · ตัวส่งหยุด' : ''));
+  text('telegramDetail', !connected || !tg ? 'รอเชื่อมต่อบริการ' : !tg.enabled ? 'เปิดที่ config/telegram.json' : tg.last_error && tg.state === 'failing' ? tg.last_error.error
+    : `ส่งล่าสุด ${stamp(tg.last_sent_at)} · รอส่ง ${tg.pending} · ล้มเหลว ${tg.failed}`);
+  $('telegramTest').classList.toggle('hidden', !connected || !tg?.active);
+  const cmd = tg?.commands;
+  $('telegramCommands').classList.toggle('hidden', !connected || !cmd || (!tg?.active && !cmd.enabled));
+  text('telegramCommands', cmd?.enabled ? 'ปิดรับคำสั่ง /status' : 'เปิดรับคำสั่ง /status');
+  if (connected && tg?.enabled && cmd?.enabled) {
+    const CMD = {listening: 'รับคำสั่งอยู่', failing: 'รับคำสั่งไม่ได้', unavailable: 'รับคำสั่งไม่ได้ (Telegram ไม่พร้อม)'};
+    $('telegramDetail').textContent += ' · ' + (CMD[cmd.state] || cmd.state) + (cmd.state === 'failing' && cmd.last_error ? ` (${cmd.last_error.error})` : '');
+  }
+  dot('telegramDot', connected && tg?.state === 'ready' && tg?.worker !== false, connected && tg?.state === 'failing');
   if (!connected) {
     dot('systemDot', false); text('systemTitle', 'บริการในเครื่องยังไม่พร้อม'); text('lastUpdate', 'ไม่พบระบบที่ 127.0.0.1:8002');
     $('errorBanner').classList.remove('hidden');
@@ -123,6 +138,21 @@ async function action(name, extra) {
 $('start').onclick = () => action('start');
 $('stop').onclick = () => action('stop');
 $('mute').onclick = () => action('pause', {paused: !state?.muted});
+$('telegramTest').onclick = async () => {
+  try {
+    const r = await bridge('telegramTest');
+    toast(r.queued ? 'ส่งข้อความทดสอบเข้าคิวแล้ว · ตรวจในแชท Telegram' : r.reason === 'test_already_pending' ? 'ยังมีข้อความทดสอบรอส่งอยู่' : r.error || 'Telegram ยังไม่พร้อม กรุณาตรวจการตั้งค่า');
+    await refresh();
+  } catch (e) { toast('ส่งข้อความทดสอบไม่สำเร็จ') }
+};
+$('telegramCommands').onclick = async () => {
+  const on = !state?.telegram?.commands?.enabled;
+  try {
+    const r = await bridge('telegramCommands', {enabled: on});
+    toast(r.error || (r.enabled ? 'เปิดรับคำสั่งแล้ว · พิมพ์ /status ในแชท Telegram' : on ? 'Telegram ยังไม่พร้อม กรุณาตรวจการตั้งค่า' : 'ปิดรับคำสั่งแล้ว · Mac หยุดดึงข้อความจาก Telegram'));
+    await refresh();
+  } catch (e) { toast('บันทึกการตั้งค่าคำสั่งไม่สำเร็จ') }
+};
 $('enableNotice').onclick = async () => {
   try {
     const ns = state?.notifications;

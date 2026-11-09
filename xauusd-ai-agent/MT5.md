@@ -34,7 +34,7 @@ sh scripts/run_mt5_bridge.sh
 3. เปิดไฟล์ EA ด้วย MetaEditor และกด Compile ตรวจว่ามี 0 errors
 4. ที่ **Tools → Options → Expert Advisors** อนุญาต WebRequest ไปยัง `http://127.0.0.1:8001`
 5. เปิดกราฟทองชื่อจริงของ XM บน M5 แล้วลาก `XMPriceBridge` จาก Navigator ลงกราฟ
-6. ใช้ `ExpectedServer=XMGlobal-MT5 7`, `HistoryBars=300`, `PollSeconds=15`, `GoldSymbol=GOLD`
+6. ใช้ `ExpectedServer=XMGlobal-MT5 7`, `HistoryBars=1000` (ค่าเริ่มต้นของ EA คือ 300 ซึ่งต้องรออุ่นเครื่องหลายวัน ดู [ALERTS.md](ALERTS.md#การอุ่นเครื่อง-indicator)), `PollSeconds=15`, `GoldSymbol=GOLD`
 
 EA **v1.01** กำหนด `GoldSymbol=GOLD` เป็นค่าเริ่มต้นและเมื่อช่องว่าง โดยไม่ขึ้นกับ symbol ของกราฟ ส่วน v1.00 เดิมเมื่อช่องว่างจะอ่าน symbol ของกราฟ หากแนบอยู่บน EURUSD ตัวรับจะปฏิเสธ HTTP422 ตาม symbol allowlist จึงแก้ใน v1.01 และเพิ่ม log `Price source symbol` เพื่อระบุแหล่งราคาจริง หลังเปลี่ยนไฟล์ `.ex5` ให้นำ EA เดิมออกแล้วแนบใหม่เพื่อโหลดโค้ดใหม่ ไม่ใช่เพียง Refresh รายการ Navigator
 

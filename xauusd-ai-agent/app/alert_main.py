@@ -1,4 +1,4 @@
-"""Alert-only XM service: MT5 snapshots -> RSI(2) strategy -> Risk level checks -> Mac alerts.
+"""Alert-only XM service: MT5 snapshots -> RSI(2) strategy -> Risk level checks -> Mac/Telegram alerts.
 
 No AI worker, no Paper account and no order execution. Runs on loopback port 8002 in place
 of the Paper service (``app.xm_main``), with its own database.
@@ -22,6 +22,8 @@ from .database import Database
 from .models import StrictModel
 from .mt5_bridge import BridgeSettings, MarketStore, Snapshot
 from .risk_manager import RiskPolicy
+from .telegram_commands import TelegramCommands
+from .telegram_notifier import TelegramConfig, TelegramNotifier
 from .webhook import authenticate, bearer
 
 ALERT_POLICY = ROOT / "config/alert-xm.json"
@@ -29,6 +31,10 @@ ALERT_POLICY = ROOT / "config/alert-xm.json"
 
 class MuteRequest(StrictModel):
     paused: bool
+
+
+class CommandsRequest(StrictModel):
+    enabled: bool
 
 
 def alert_database_path() -> Path:
@@ -97,6 +103,10 @@ class AlertMonitor:
             "ready": feed["available"] and warm and healthy_status and all(workers.values()),
             "feed": feed, "receiver": self.receiver, "engine": status, "workers": workers, "muted": muted,
             "alerts": alerts, "latest_alert": latest_alert, "alert_counts": counts,
+            "telegram": self.app.state.telegram.status() | {
+                "worker": not self.app.state.telegram_task.done(),
+                "commands": self.app.state.telegram_commands.status() | {
+                    "worker": not self.app.state.telegram_commands_task.done()}},
             "events": events, "recent_events": recent, "latest_event_id": latest,
             "strategy": {"name": policy.strategy, "version": policy.strategy_version,
                          "rsi_low": params["rsi_low"], "sl_atr": params["sl_atr"], "rr": params["rr"],
@@ -129,8 +139,10 @@ class AlertMonitor:
                 await asyncio.sleep(15)
 
 
-def create_alert_app(settings=None, bridge_settings=None, alert_policy=None, database_path=None):
-    config = settings or Settings.from_env()
+def create_alert_app(settings=None, bridge_settings=None, alert_policy=None, database_path=None,
+                     telegram_config=None, telegram_transport=None):
+    config = settings or Settings.from_env()  # also loads .env for the Telegram credentials
+    telegram = telegram_config or TelegramConfig.load()
     feed_config = bridge_settings or BridgeSettings.from_env()
     policy = alert_policy or AlertPolicy.load(ALERT_POLICY)
 
@@ -175,10 +187,18 @@ def create_alert_app(settings=None, bridge_settings=None, alert_policy=None, dat
         monitor = AlertMonitor(application, feed_config)
         application.state.monitor = monitor
         application.state.monitor_task = asyncio.create_task(monitor.run())
+        notifier = TelegramNotifier.from_env(db, telegram, transport=telegram_transport)
+        application.state.telegram = notifier
+        application.state.telegram_task = asyncio.create_task(notifier.run())
+        commands = TelegramCommands(notifier, lambda: monitor.snapshot(2**62))
+        application.state.telegram_commands = commands
+        application.state.telegram_commands_task = asyncio.create_task(commands.run())
+        log.info("Telegram notifications: %s; commands: %s", notifier.status()["state"], commands.status()["state"])
         try:
             yield
         finally:
-            for task in (application.state.monitor_task, application.state.alert_task):
+            for task in (application.state.telegram_commands_task, application.state.telegram_task,
+                         application.state.monitor_task, application.state.alert_task):
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
@@ -224,5 +244,32 @@ def create_alert_app(settings=None, bridge_settings=None, alert_policy=None, dat
         authorize(request)
         result = request.app.state.alert_engine.set_muted(body.paused)
         return {"paused": result["muted"], "changed": result["changed"]}
+
+    @app.get("/telegram/status")
+    def telegram_status(request: Request):
+        authorize(request)
+        return request.app.state.telegram.status()
+
+    @app.post("/telegram/test")
+    def telegram_test(request: Request):
+        authorize(request)
+        result = request.app.state.telegram.queue_test()
+        if not result["queued"]:
+            return JSONResponse(status_code=409, content=result)
+        return result
+
+    @app.get("/telegram/commands")
+    def telegram_commands_status(request: Request):
+        authorize(request)
+        return request.app.state.telegram_commands.status()
+
+    @app.post("/telegram/commands")
+    def telegram_commands(request: Request, body: CommandsRequest):
+        """Switch read-only chat commands on or off (stored; survives restarts)."""
+        authorize(request)
+        result = request.app.state.telegram_commands.set_enabled(body.enabled)
+        if body.enabled and not result["enabled"]:
+            return JSONResponse(status_code=409, content=result)
+        return result | {"commands": request.app.state.telegram_commands.status()}
 
     return app

@@ -131,7 +131,7 @@ sh scripts/build_mac.sh
 หลังจากนั้นตรวจด้วยตัวกรอง Risk จาก [config/risk-xm-paper.json](config/risk-xm-paper.json) ชุดเดียวกับที่ใช้ใน backtest ได้แก่:
 
 - RR สุทธิ ≥ 1.2
-- ระยะ SL 1–3 ATR
+- ระยะ SL 1–12 ATR (M5 ATR14)
 - spread/ATR ≤ 0.20 โดยคิด spread อย่างน้อย 0.60
 - อายุสัญญาณ ≤ 300 วินาที และต้องมาจาก server/symbol ที่ pin ไว้
 
@@ -150,6 +150,10 @@ sh scripts/build_mac.sh
 | GET `/alerts?after_id=0&limit=50` | สัญญาณที่บันทึก (`alert`, `missed`, `warmup`, `rejected`) พร้อมหลักฐาน |
 | GET `/dashboard/state` | สถานะรวมสำหรับแอป: ราคา, engine, สัญญาณ, เหตุการณ์ และกติกา |
 | POST `/dashboard/pause` | ปิด/เปิดเสียงแจ้งเตือนด้วย `{"paused":true}` หรือ `{"paused":false}` |
+| GET `/telegram/status` | สถานะการส่ง Telegram (ไม่มี token) |
+| POST `/telegram/test` | เข้าคิวข้อความทดสอบ Telegram (ตอบ 409 ถ้ายังไม่ได้ตั้งค่า) |
+| GET `/telegram/commands` | สถานะคำสั่งในแชท (`/status`, `/signal`, `/help`) |
+| POST `/telegram/commands` | เปิด/ปิดคำสั่งในแชทด้วย `{"enabled": true\|false}` (ตอบ 409 ถ้า Telegram ยังไม่พร้อม) |
 
 บนพอร์ต **8001** ใช้ Bearer `MT5_BRIDGE_TOKEN` จาก `.env.mt5`: `POST /mt5/snapshot`, `POST /mt5/ticks`, `GET /mt5/latest?symbol=GOLD`, `GET /mt5/ticks/cursor?symbol=GOLD` และ `GET /mt5/status` ส่วน `/health` ไม่ต้องใช้ token งบรับ snapshot คือ 20 คำขอ/นาที และ Tick 64 คำขอ/นาที แยกจากกัน
 
@@ -158,11 +162,13 @@ sh scripts/build_mac.sh
 | ตำแหน่ง | เนื้อหา |
 | --- | --- |
 | `data/mt5-market.db` | Market snapshots, ordered ticks และ coverage/cursor |
-| `data/xm-alerts.db` | Checkpoint ของกลยุทธ์, สัญญาณแจ้งเตือน, ประวัติการเริ่มคำนวณใหม่ และเหตุการณ์ UI |
+| `data/xm-alerts.db` | Checkpoint ของกลยุทธ์, สัญญาณแจ้งเตือน, ประวัติการเริ่มคำนวณใหม่, เหตุการณ์ UI และคิวส่ง Telegram |
 | `data/xm-trading.db` | ข้อมูลโหมด AI/Paper เดิม (สัญญาณ, ผล AI/Risk, บัญชี Paper) ไม่ถูกเขียนในโหมดแจ้งเตือน |
 | `data/trading.db` | สัญญาณจากเส้นทาง TradingView/OANDA ทางเลือก |
 | `.runtime/` | Log ของบริการที่เริ่มผ่านแอป, รายงานตรวจ และฐานข้อมูลสำรองที่ทำไว้ |
-| `config/` | Policy แจ้งเตือน (`alert-xm.json`), ตัวกรอง Risk และกฎบัญชี Paper เดิม |
+| `config/` | Policy แจ้งเตือน (`alert-xm.json`), การส่ง Telegram (`telegram.json`), ตัวกรอง Risk และกฎบัญชี Paper เดิม |
+
+`TELEGRAM_BOT_TOKEN` เก็บใน `.env` เท่านั้น การตั้งค่า Telegram อยู่ใน [ALERTS.md](ALERTS.md#ส่งแจ้งเตือนไป-telegram)
 
 `.env`, `.env.mt5`, ไฟล์ token, ฐานข้อมูล และ `.runtime/` ถูกละเว้นใน Git อย่าใส่ token ใน source, URL ที่แชร์, ภาพหน้าจอ หรือ log แอป Mac เก็บ bearer token ในฝั่ง native; หน้า UI ไม่มี token
 
@@ -219,6 +225,7 @@ sh scripts/build_mac.sh
 - กลยุทธ์ใหม่ให้เขียนเป็นไฟล์ละหนึ่งกลยุทธ์ใน `backtest/strategies/<name>.py` โดยสืบทอด `Strategy` ใน `backtest/strategies/base.py` แล้ว return `{side, sl, tp}` หรือ `None` จาก `on_bar(ctx)` ส่วน indicator แบบ causal อยู่ใน `backtest/indicators.py`
 - `baseline_xm01` คือ `xm-0.1` ที่ใช้ rule ชุดเดียวกับระบบจริง `tests/test_backtest.py` ตรวจว่า candidate ตรงกับ `XMEngine` บนแท่งเดียวกัน
 - `scripts/walk_forward.py` กวาด grid พารามิเตอร์ (ตัวอย่างใน `backtest/grids/`) แล้วทำ walk-forward: แต่ละ fold เลือกชุดที่ดีที่สุดจากช่วง train แล้วนับผลเฉพาะช่วง test ถัดไป ค่าเริ่มต้นคือ train 6 เดือนแบบเลื่อน และ test 1 เดือน (`--anchored` ใช้ช่วง train ที่ขยายจากต้นข้อมูล) แต่ละชุดพารามิเตอร์รันครั้งเดียวตลอดไฟล์แล้วแบ่งไม้ตามเวลาสัญญาณ ผลเขียนที่ `.runtime/backtest/<run>/configs.json`, `walk_forward.json` และ `trades.json`
+- `scripts/tpsl_london_breakout.py` จำลองกลยุทธ์ London breakout ที่ TPSL เผยแพร่ (คำสั่ง buy stop/sell stop บน M1) แยกจาก engine เพราะ engine รองรับเฉพาะการเข้าที่แท่งถัดไป ผลเขียนที่ `.runtime/backtest/tpsl-london/` ([ผลทดสอบ](tests/tpsl-london-breakout-2026-11-08.md))
 
 ```sh
 .venv/bin/python scripts/walk_forward.py --strategy rsi2_trend_pullback_r2 --grid backtest/grids/rsi2_trend_pullback_r2.json
@@ -255,7 +262,7 @@ sh scripts/run_local.sh
 
 รับ JSON UTF-8 แบบ strict, จำกัด body เริ่มต้น 16 KiB, ตรวจ schema/ราคา/เวลา และใช้ signal ID ป้องกันรายการซ้ำ `201` หมายถึงบันทึกใหม่, `200` หมายถึงข้อมูลเดิม, `409` หมายถึง ID เดิมแต่ payload ต่างกัน สัญญาณที่เก่าเกินเกณฑ์ถูกปฏิเสธก่อน deduplication
 
-เส้นทาง XM ใช้งานได้โดยไม่ต้องมี TradingView Alert หรือ Cloudflare Tunnel ปัจจุบันยังไม่มี Tunnel/Alert จริงหรือ Telegram ที่เชื่อมใช้งานในโครงการ หากนำ webhook ออกสู่ภายนอกต้องเก็บ URL ที่มี token เป็นความลับและปกปิด path ใน proxy log ด้วย
+เส้นทาง XM ใช้งานได้โดยไม่ต้องมี TradingView Alert หรือ Cloudflare Tunnel ปัจจุบันยังไม่มี Tunnel หรือ TradingView Alert จริงที่เชื่อมใช้งาน (Telegram ใช้เฉพาะกับบริการแจ้งเตือน XM) หากนำ webhook ออกสู่ภายนอกต้องเก็บ URL ที่มี token เป็นความลับและปกปิด path ใน proxy log ด้วย
 
 ## คู่มือเพิ่มเติม
 

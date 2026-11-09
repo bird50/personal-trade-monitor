@@ -82,18 +82,21 @@ final class Controller: NSObject, NSApplicationDelegate, WKScriptMessageHandlerW
         decisionHandler(allowed ? .allow : .cancel)
     }
 
-    func request(_ path: String, paused: Bool? = nil, completion: @escaping ([String: Any]?) -> Void) {
+    func request(_ path: String, json: [String: Any]? = nil, post: Bool = false, acceptConflict: Bool = false, completion: @escaping ([String: Any]?) -> Void) {
         guard !token.isEmpty, let url = URL(string: "http://127.0.0.1:8002" + path) else { completion(nil); return }
         var req = URLRequest(url: url, timeoutInterval: 4)
         req.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
-        if let paused = paused {
+        if let json = json {
             req.httpMethod = "POST"
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            req.httpBody = try? JSONSerialization.data(withJSONObject: ["paused": paused])
+            req.httpBody = try? JSONSerialization.data(withJSONObject: json)
+        } else if post {
+            req.httpMethod = "POST"
         }
         URLSession.shared.dataTask(with: req) { data, response, _ in
             var result: [String: Any]?
-            if (response as? HTTPURLResponse)?.statusCode == 200, let data = data { result = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] }
+            let code = (response as? HTTPURLResponse)?.statusCode
+            if code == 200 || (acceptConflict && code == 409), let data = data { result = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] }
             DispatchQueue.main.async { completion(result) }
         }.resume()
     }
@@ -206,8 +209,13 @@ final class Controller: NSObject, NSApplicationDelegate, WKScriptMessageHandlerW
             }
         case "pause":
             guard let paused = body["paused"] as? Bool else { replyHandler(nil, "Invalid request"); return }
-            request("/dashboard/pause", paused: paused) { result in replyHandler(result ?? ["error": "บันทึกการปิดเสียงไม่สำเร็จ กรุณาตรวจบริการ"], nil) }
+            request("/dashboard/pause", json: ["paused": paused]) { result in replyHandler(result ?? ["error": "บันทึกการปิดเสียงไม่สำเร็จ กรุณาตรวจบริการ"], nil) }
         case "start", "stop", "status": runService(action) { replyHandler($0, nil) }
+        case "telegramTest":
+            request("/telegram/test", post: true, acceptConflict: true) { result in replyHandler(result ?? ["error": "ส่งคำขอทดสอบ Telegram ไม่สำเร็จ กรุณาตรวจบริการ"], nil) }
+        case "telegramCommands":
+            guard let enabled = body["enabled"] as? Bool else { replyHandler(nil, "Invalid request"); return }
+            request("/telegram/commands", json: ["enabled": enabled], acceptConflict: true) { result in replyHandler(result ?? ["error": "บันทึกการตั้งค่าคำสั่ง Telegram ไม่สำเร็จ กรุณาตรวจบริการ"], nil) }
         case "notifications":
             notices.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in
                 self.notificationState { replyHandler(["notifications": $0], nil) }
